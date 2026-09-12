@@ -20,4 +20,8 @@ shellcheck --exclude=SC1091 \
            ./run/temperature_monitor \
            ./run/usb-link-watchdog.sh \
            ./run/waitforidle \
-           ./tests/usb-link-watchdog-test.sh
+           ./tests/usb-link-watchdog-test.sh \
+           ./tests/integration-test.sh \
+           ./tests/run-integration-tests.sh \
+           ./tests/docker/build-dietpi-base.sh \
+           ./tests/docker/extract-dietpi-rootfs.sh
