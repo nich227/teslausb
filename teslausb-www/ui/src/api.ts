@@ -234,38 +234,46 @@ export async function readLog(file: string): Promise<string> {
   return fetchText(file);
 }
 
-// File operations (best-effort param contract matching the cgi scripts)
+// File operations.
+//
+// The cgi scripts take their query arguments positionally: '&'-separated,
+// where the FIRST argument is a directory to work in (relative to
+// DOCUMENT_ROOT, empty meaning the document root itself) and the remaining
+// ones are the underlying command's arguments. Sending a bare path as the only
+// argument makes the script chdir into it and then run e.g. 'mkdir' with no
+// operands at all, which always fails.
+//
+// For the same reason none of these may go through bust(): the '_=<timestamp>'
+// it appends would arrive as an extra operand for mkdir/rm/mv/cp. Cache
+// busting is unnecessary here anyway, as cache: 'no-store' already applies.
+function cgiQuery(...args: string[]): string {
+  return args.map(encodeURIComponent).join('&');
+}
+
 export function downloadUrl(path: string): string {
-  return CGI + 'download.sh?' + encodeURIComponent(path);
+  return CGI + 'download.sh?' + cgiQuery('', path);
 }
 export function downloadZipUrl(paths: string[]): string {
-  return CGI + 'downloadzip.sh?' + paths.map((p) => encodeURIComponent(p)).join('&');
+  return CGI + 'downloadzip.sh?' + cgiQuery('', ...paths);
 }
 export async function mkdir(path: string): Promise<void> {
-  await fetch(bust(CGI + 'mkdir.sh?' + encodeURIComponent(path)), { cache: 'no-store' });
+  await fetch(CGI + 'mkdir.sh?' + cgiQuery('', path), { cache: 'no-store' });
 }
 export async function rm(path: string): Promise<void> {
-  await fetch(bust(CGI + 'rm.sh?' + encodeURIComponent(path)), { cache: 'no-store' });
+  await fetch(CGI + 'rm.sh?' + cgiQuery('', path), { cache: 'no-store' });
 }
 export async function mv(from: string, to: string): Promise<void> {
-  await fetch(bust(CGI + 'mv.sh?' + encodeURIComponent(from) + '&' + encodeURIComponent(to)), {
-    cache: 'no-store',
-  });
+  await fetch(CGI + 'mv.sh?' + cgiQuery('', from, to), { cache: 'no-store' });
 }
 export async function cp(from: string, to: string): Promise<void> {
-  await fetch(bust(CGI + 'cp.sh?' + encodeURIComponent(from) + '&' + encodeURIComponent(to)), {
-    cache: 'no-store',
-  });
+  await fetch(CGI + 'cp.sh?' + cgiQuery('', from, to), { cache: 'no-store' });
 }
 export async function uploadFile(destDir: string, file: File): Promise<void> {
-  await fetch(
-    CGI + 'upload.sh?' + encodeURIComponent(destDir) + '&' + encodeURIComponent(file.name),
-    {
-      method: 'POST',
-      body: file,
-      cache: 'no-store',
-    },
-  );
+  await fetch(CGI + 'upload.sh?' + cgiQuery(destDir, file.name), {
+    method: 'POST',
+    body: file,
+    cache: 'no-store',
+  });
 }
 
 // Network speed test: stream randomdata.sh and measure throughput.
