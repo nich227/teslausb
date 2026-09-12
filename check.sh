@@ -19,4 +19,5 @@ shellcheck --exclude=SC1091 \
            ./run/send-push-message \
            ./run/temperature_monitor \
            ./run/usb-link-watchdog.sh \
-           ./run/waitforidle
+           ./run/waitforidle \
+           ./tests/usb-link-watchdog-test.sh

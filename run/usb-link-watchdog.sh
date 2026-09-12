@@ -19,17 +19,20 @@
 #
 set -uo pipefail
 
-readonly CAM_IMAGE="/backingfiles/cam_disk.bin"
-readonly STALL_MINS=15          # no writes for this long => car isn't seeing us
-readonly MIN_UPTIME_MINS=20     # give the Pi time to boot and settle first
-readonly COOLDOWN_MINS=30       # minimum gap between automatic reboots
-readonly LOG="/mutable/usb-link-watchdog.log"
-readonly STATE="/mutable/usb-link-watchdog.last-reboot"
+readonly CAM_IMAGE="${CAM_IMAGE:-/backingfiles/cam_disk.bin}"
+readonly UDC_DIR="${UDC_DIR:-/sys/class/udc}"
+readonly UPTIME_FILE="${UPTIME_FILE:-/proc/uptime}"
+readonly STALL_MINS="${STALL_MINS:-15}"           # no writes this long => car isn't seeing us
+readonly MIN_UPTIME_MINS="${MIN_UPTIME_MINS:-20}" # give the Pi time to boot and settle first
+readonly COOLDOWN_MINS="${COOLDOWN_MINS:-30}"     # minimum gap between automatic reboots
+readonly LOG="${LOG:-/mutable/usb-link-watchdog.log}"
+readonly STATE="${STATE:-/mutable/usb-link-watchdog.last-reboot}"
+readonly REBOOT_CMD="${REBOOT_CMD:-/sbin/reboot}"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$LOG"; }
 
 now=$(date +%s)
-uptime_s=$(awk '{print int($1)}' /proc/uptime)
+uptime_s=$(awk '{print int($1)}' "$UPTIME_FILE")
 
 # --- give the system time to settle after boot -----------------------------
 if (( uptime_s < MIN_UPTIME_MINS * 60 )); then
@@ -37,7 +40,7 @@ if (( uptime_s < MIN_UPTIME_MINS * 60 )); then
 fi
 
 # --- is the gadget even presented? -----------------------------------------
-state=$(cat /sys/class/udc/*/state 2>/dev/null | head -1)
+state=$(cat "$UDC_DIR"/*/state 2>/dev/null | head -1)
 if [[ "$state" != "configured" ]]; then
     # teslausb detaches the gadget during its own archive cycle; that's normal
     # and short-lived, so this is not a fault condition.
@@ -79,4 +82,4 @@ ep1=$(journalctl -b 0 -k --no-pager 2>/dev/null | grep -c "ep1out" || true)
 log "ACTION: no writes to cam disk for ${idle_s}s while gadget=configured (uptime $((uptime_s/60))m, ep1out errors this boot: ${ep1}) -> rebooting to reset dwc2"
 printf '%s' "$now" > "$STATE"
 sync
-/sbin/reboot
+"$REBOOT_CMD"
