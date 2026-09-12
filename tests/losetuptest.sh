@@ -14,7 +14,7 @@ do
   then
     LOOP=$(losetup -n -O NAME -j /backingfiles/losetuptest.bin)
     echo "$LOOP"
-    losetup -d $LOOP
+    losetup -d "$LOOP"
   else
     echo losetup failed:
     LOOP=$(losetup -n -O NAME -j /backingfiles/losetuptest.bin)
@@ -23,7 +23,7 @@ do
       echo "No loop device exists"
     else
       echo "loop device exists: $LOOP"
-      losetup -d $LOOP
+      losetup -d "$LOOP"
     fi
     losetup -l
   fi

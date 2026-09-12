@@ -11,7 +11,7 @@ then
 fi
 
 function getvarname () {
-  local line="$@"
+  local line="$*"
   local var=""
   if [[ "$line" =~ ^[[:space:]]*#?[[:space:]]*export[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)= ]]
   then

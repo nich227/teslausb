@@ -76,7 +76,8 @@ function check_default_rsync {
 }
 
 function install_prebuilt_rsync {
-  local arch="$(uname -m)"
+  local arch
+  arch="$(uname -m)"
   if [ "$arch" = "aarch64" ]
   then
     curl -L --fail -o /usr/local/bin/rsync https://github.com/marcone/rsync/releases/download/v3.2.3-arm64/rsync
@@ -185,7 +186,7 @@ function get_archive_module () {
 }
 
 function pip3_install () {
-  rm -f /usr/lib/$(py3versions -d)/EXTERNALLY-MANAGED
+  rm -f "/usr/lib/$(py3versions -d)/EXTERNALLY-MANAGED"
   pip3 install "$@"
 }
 

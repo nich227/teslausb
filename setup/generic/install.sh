@@ -242,4 +242,4 @@ then
 fi
 
 # hack to print the above message without duplicating it here
-grep -A 12 SETUP_FINISHED .bashrc  | grep echo | while read line; do eval "$line"; done
+grep -A 12 SETUP_FINISHED .bashrc  | grep echo | while read -r line; do eval "$line"; done

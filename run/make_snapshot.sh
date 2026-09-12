@@ -177,7 +177,7 @@ function snapshot {
   then
     local -r tmpmnt=$(mktemp -d)
     /root/bin/mountimage "$newsnapname" "$tmpmnt" rw
-    find "$tmpmnt" -newerat 20380101 | xargs -r touch
+    find "$tmpmnt" -newerat 20380101 -exec touch {} +
     umount "$tmpmnt"
     rmdir "$tmpmnt"
   fi

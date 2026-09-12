@@ -10,7 +10,7 @@ if [ "$(systemd-detect-virt)" == "none" ]
 then
   echo "WARNING, it is recommended to run this script in a VM."
   echo "Press enter to continue, or ctrl-c to abort."
-  read
+  read -r
 fi
 
 BACKINGFILES_FOLDER=$(mktemp -d backingfilestestXXX)
@@ -61,7 +61,7 @@ rm "$BACKINGFILES_FOLDER/test.bin"
           for exfat in true false
           do
             checksuccess "$cam" "$music" "$lightshow" "$boombox" "$BACKINGFILES_FOLDER" "$exfat" < /dev/null
-	    find "$BACKINGFILES_FOLDER" -type f | xargs rm
+	    find "$BACKINGFILES_FOLDER" -type f -exec rm {} +
           done
         done
       done

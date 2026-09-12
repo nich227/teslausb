@@ -1,6 +1,6 @@
 #!/bin/bash -eu
 
-SRC=$(dirname $(readlink -f $0))
+SRC=$(dirname "$(readlink -f "$0")")
 DEST=$(readlink -f .)
 
 if [[ "$DEST" != */pi-gen ]]

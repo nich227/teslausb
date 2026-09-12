@@ -82,7 +82,8 @@ else
   echo "DATA_DRIVE not set. Proceeding to SD card setup"
 fi
 
-readonly LAST_PARTITION_DEVICE=$(sfdisk -q -l "$BOOT_DISK" | tail -1 | awk '{print $1}')
+LAST_PARTITION_DEVICE=$(sfdisk -q -l "$BOOT_DISK" | tail -1 | awk '{print $1}')
+readonly LAST_PARTITION_DEVICE
 readonly LAST_PART_NUM=${LAST_PARTITION_DEVICE:0-1}
 readonly SECOND_TO_LAST_PART_NUM=$((LAST_PART_NUM - 1))
 readonly SECOND_TO_LAST_PARTITION_DEVICE=${LAST_PARTITION_DEVICE:0:-1}${SECOND_TO_LAST_PART_NUM}
@@ -111,6 +112,8 @@ then
     # or manually by the user, and that they're big enough
     log_progress "using existing backingfiles and mutable partitions"
     update_fstab
+    # this file may be sourced or executed; return if sourced, exit if not
+    # shellcheck disable=SC2317
     return &> /dev/null || exit 0
   elif blkid "${BACKINGFILES_DEVICE}" | grep -q 'TYPE="ext4"'
   then
@@ -140,6 +143,8 @@ then
     sed -i 's/LABEL=backingfiles .*/LABEL=backingfiles \/backingfiles xfs auto,rw,noatime 0 2/' /etc/fstab
     mount /backingfiles
     log_progress "backingfiles converted to xfs and mounted"
+    # this file may be sourced or executed; return if sourced, exit if not
+    # shellcheck disable=SC2317
     return &> /dev/null || exit 0
   fi
 fi

@@ -10,7 +10,7 @@ if [ "$(systemd-detect-virt)" == "none" ]
 then
   echo "WARNING, it is recommended to run this script in a VM."
   echo "Press enter to continue, or ctrl-c to abort."
-  read
+  read -r
 fi
 
 function checkenv {
@@ -88,9 +88,11 @@ EOF
 
   LOOP=$(sudo losetup --find --partscan --show "$img")
 
-  mkfs.vfat "${LOOP}p1" &>> "$LOG"
-  mkfs.ext4 "${LOOP}p2" &>> "$LOG"
-  mkfs.ext4 "${LOOP}p3" &>> "$LOG"
+  {
+    mkfs.vfat "${LOOP}p1"
+    mkfs.ext4 "${LOOP}p2"
+    mkfs.ext4 "${LOOP}p3"
+  } &>> "$LOG"
 
   export BOOT_DISK="$LOOP"
   export DATA_DRIVE=""
@@ -118,9 +120,11 @@ EOF
 
   LOOP=$(sudo losetup --find --partscan --show "$img")
 
-  mkfs.vfat "${LOOP}p1" &>> "$LOG"
-  mkfs.ext4 "${LOOP}p2" &>> "$LOG"
-  mkfs.ext4 "${LOOP}p3" &>> "$LOG"
+  {
+    mkfs.vfat "${LOOP}p1"
+    mkfs.ext4 "${LOOP}p2"
+    mkfs.ext4 "${LOOP}p3"
+  } &>> "$LOG"
 
   export BOOT_DISK="$LOOP"
   export DATA_DRIVE=""
@@ -147,9 +151,11 @@ EOF
 
   LOOP=$(sudo losetup --find --partscan --show "$img")
 
-  mkfs.ext4 "${LOOP}p1" &>> "$LOG"
-  mkfs.vfat "${LOOP}p2" &>> "$LOG"
-  mkfs.ext4 "${LOOP}p3" &>> "$LOG"
+  {
+    mkfs.ext4 "${LOOP}p1"
+    mkfs.vfat "${LOOP}p2"
+    mkfs.ext4 "${LOOP}p3"
+  } &>> "$LOG"
 
   export BOOT_DISK="$LOOP"
   export DATA_DRIVE=""
@@ -229,7 +235,8 @@ function makeexternaldriveimage {
   local img="$1"
   truncate -s $((64*1024*1024*1024)) "$img"
 
-  export DATA_DRIVE=$(sudo losetup --find --partscan --show "$img")
+  DATA_DRIVE=$(sudo losetup --find --partscan --show "$img")
+  export DATA_DRIVE
 }
 
 ROOT_IMAGE=/tmp/createbackingfilepartitiontest$$.img

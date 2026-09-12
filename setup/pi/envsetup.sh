@@ -45,11 +45,11 @@ function read_setup_variables {
   then
     local -r setup_file=/root/teslausb_setup_variables.conf
   fi
-  if [ -e $setup_file ]
+  if [ -e "$setup_file" ]
   then
     # "shellcheck" doesn't realize setup_file is effectively a constant
     # shellcheck disable=SC1090
-    safesource $setup_file
+    safesource "$setup_file"
   else
     echo "couldn't find $setup_file"
     return 1
@@ -99,13 +99,13 @@ function read_setup_variables {
     if [[ -z ${!newname+x} ]] && [[ -n ${!oldname+x} ]]
     then
       local value=${!oldname}
-      export $newname="$value"
-      unset $oldname
+      export "$newname=$value"
+      unset "$oldname"
     fi
   done
 
   # set defaults for things not set in the config
-  REPO=${REPO:-marcone}
+  REPO=${REPO:-nich227}
   SNAPSHOTS_ENABLED=${SNAPSHOTS_ENABLED:-true}
   if [ "$SNAPSHOTS_ENABLED" != "true" ]
   then
@@ -212,8 +212,9 @@ fi
 # (https://lore.kernel.org/lkml/8bed44f2-273c-856e-0018-69f127ea4258@linux.ibm.com/)
 # but even when it fails like that, testing shows the loop device gets created anyway
 function losetup_find_show {
-  local lastarg="${@:$#}"
-  local loop=$(losetup -n -O NAME -j "$lastarg")
+  local lastarg="${*:$#}"
+  local loop
+  loop=$(losetup -n -O NAME -j "$lastarg")
   if losetup -f --show "$@"
   then
     return
@@ -226,7 +227,8 @@ function losetup_find_show {
     # an error.
     return 1
   fi
-  local newloop=$(losetup -n -O NAME -j "$lastarg")
+  local newloop
+  newloop=$(losetup -n -O NAME -j "$lastarg")
   if [ -z "$newloop" ]
   then
     # losetup truly failed and didn't even create a loop device
