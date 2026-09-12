@@ -69,4 +69,6 @@ log "integration tests in DietPi $DISTRO ($ARCH)"
 docker run --rm \
   --cap-add=SYS_ADMIN \
   --security-opt apparmor=unconfined \
+  -e "COVERAGE=${COVERAGE:-1}" \
+  -e "COVERAGE_MIN=${COVERAGE_MIN:-100}" \
   "$TEST_TAG"

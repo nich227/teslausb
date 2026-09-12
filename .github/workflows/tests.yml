@@ -34,5 +34,5 @@ jobs:
           DIETPI_DISTRO: ${{ matrix.distro }}
         # Lint runs in its own workflow (shellcheck.yml), so skip it here.
         run: |
-          DIETPI_CACHE_DIR="$HOME/.cache/dietpi-images" \
+          DIETPI_CACHE_DIR="$HOME/.cache/dietpi-images" COVERAGE_MIN=100 \
             ./tests/run-integration-tests.sh --no-lint

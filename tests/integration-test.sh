@@ -125,20 +125,870 @@ do
 done
 
 # ===========================================================================
+banner "the port to DietPi"
+# ===========================================================================
+
+# Stubs used throughout: systemd is not PID 1 in here, so systemctl is recorded
+# rather than executed.
+STUBS=/tmp/stubs
+mkdir -p "$STUBS" /lib/systemd/system /etc/systemd/system /root/bin
+cat > "$STUBS/systemctl" <<'EOF'
+#!/bin/bash
+# Record every call. Answer queries the way a container with no systemd would:
+# nothing is enabled or active unless a test says otherwise.
+echo "systemctl $*" >> /tmp/systemctl.calls
+for arg in "$@"; do
+  case "$arg" in
+    is-enabled|is-active|is-failed)
+      [ -e "/tmp/systemctl.enabled.${*: -1}" ] && exit 0
+      exit 1
+      ;;
+  esac
+done
+exit 0
+EOF
+chmod +x "$STUBS/systemctl"
+export PATH="$STUBS:$PATH"
+
+# Line coverage. bash does not take PS4 from the environment, so the tracing is
+# switched on through BASH_ENV, which a non-interactive bash sources before it
+# runs the script. tests/coverage.sh reads the resulting markers.
+readonly TRACE_DIR="${TRACE_DIR:-/tmp/teslausb-coverage}"
+readonly COV_INIT=/tmp/coverage-init.sh
+cat > "$COV_INIT" <<'EOF'
+if [ -n "${COV_TRACE:-}" ]
+then
+  exec 9>> "$COV_TRACE"
+  BASH_XTRACEFD=9
+  PS4='+COV:${BASH_SOURCE##*/}:${LINENO}:'
+  set -x
+fi
+EOF
+
+trace_bash () {
+  if [ -n "${COVERAGE:-}" ]
+  then
+    mkdir -p "$TRACE_DIR"
+    local out
+    out="$TRACE_DIR/$(basename "$1").$$.$RANDOM.trace"
+    BASH_ENV="$COV_INIT" COV_TRACE="$out" bash "$@"
+  else
+    bash "$@"
+  fi
+}
+
+# teslausb used to target Raspberry Pi OS. These cases cover the pieces that
+# replaced the Raspberry-Pi-OS-specific machinery.
+
+start_case "setup refuses to run on anything that is not DietPi"
+# Drive the guard directly: the check is the first thing setup-teslausb does.
+guard=$(sed -n '/^if \[ ! -f \/boot\/dietpi\/\.version \]/,/^fi$/p' "$REPO/setup/pi/setup-teslausb")
+if [ -n "$guard" ]
+then
+  ok "platform guard present in setup-teslausb"
+  # with the marker present (this image) the guard must fall through
+  if ( eval "$guard" ) > /dev/null 2>&1
+  then ok "guard passes on DietPi"
+  else not_ok "guard rejected a real DietPi image"
+  fi
+  # and reject when the marker is missing
+  out=$( ( eval "${guard//\/boot\/dietpi\/.version//nonexistent/dietpi-version}" ) 2>&1 )
+  rc=$?
+  if [ "$rc" -ne 0 ] && grep -q "not DietPi" <<< "$out"
+  then ok "guard stops with a clear message when DietPi is absent"
+  else not_ok "guard did not reject a non-DietPi system (rc=$rc, out=$out)"
+  fi
+else
+  not_ok "no DietPi platform guard found in setup-teslausb"
+fi
+
+start_case "no Raspberry Pi OS leftovers in the setup scripts"
+# Comments may still mention these (explaining what replaced them), so strip the
+# file:line: prefix and ignore commented lines.
+for pattern in raspbian legacy.raspbian userconf-pi dhcpcd /etc/rc.local wpa_supplicant.conf.sample
+do
+  hits=$(
+    grep -rn --include='*.sh' --include='setup-teslausb' -F -- "$pattern" \
+      "$REPO/setup" "$REPO/run" 2> /dev/null |
+      sed 's/^[^:]*:[0-9]*://' |
+      grep -v '^[[:blank:]]*#' || true
+  )
+  if [ -n "$hits" ]
+  then
+    not_ok "'$pattern' is still used in the setup scripts: $(head -1 <<< "$hits")"
+  else
+    ok "no '$pattern' code references"
+  fi
+done
+
+start_case "the pi-gen image pipeline is gone"
+assert_no_file "$REPO/pi-gen-sources/pi-gen-config" "pi-gen config removed"
+if [ -d "$REPO/pi-gen-sources" ]
+then not_ok "pi-gen-sources still exists"
+else ok "pi-gen-sources removed"
+fi
+assert_file "$REPO/dietpi/Automation_Custom_Script.sh" "DietPi bootstrap script present"
+assert_file "$REPO/dietpi/dietpi.txt.sample" "dietpi.txt sample present"
+assert_file "$REPO/dietpi/teslausb_setup_variables.conf.sample" "config sample moved to dietpi/"
+
+start_case "the dietpi.txt sample sets what the bootstrap depends on"
+for key in AUTO_SETUP_AUTOMATED=1 AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1 AUTO_SETUP_NET_HOSTNAME=
+do
+  assert_grep "$key" "$REPO/dietpi/dietpi.txt.sample" "sample sets $key"
+done
+# every AUTO_SETUP_/CONFIG_ key in the sample must be one DietPi actually reads,
+# otherwise the instructions silently do nothing
+unknown=""
+while read -r key
+do
+  grep -q "^#\?${key}=" /boot/dietpi.txt || unknown="$unknown $key"
+done < <(grep -oE '^(AUTO_SETUP|CONFIG|SURVEY)_[A-Z0-9_]+' "$REPO/dietpi/dietpi.txt.sample" | sort -u)
+if [ -z "$unknown" ]
+then ok "every key in the sample exists in DietPi's own dietpi.txt"
+else not_ok "sample references keys DietPi does not have:$unknown"
+fi
+
+start_case "the setup service is a valid unit that runs the setup driver"
+assert_file "$REPO/setup/pi/teslausb-setup.service" "unit file present"
+assert_grep "ExecStart=/root/bin/first-boot.sh" "$REPO/setup/pi/teslausb-setup.service" \
+  "unit runs the setup driver"
+assert_grep "ConditionPathExists=!/teslausb/TESLAUSB_SETUP_FINISHED" \
+  "$REPO/setup/pi/teslausb-setup.service" "unit is skipped once setup has finished"
+install -m 755 "$REPO/setup/pi/first-boot.sh" /root/bin/first-boot.sh
+cp "$REPO/setup/pi/teslausb-setup.service" /lib/systemd/system/
+if command -v systemd-analyze > /dev/null
+then
+  out=$(systemd-analyze verify /lib/systemd/system/teslausb-setup.service 2>&1)
+  if grep -q "teslausb-setup" <<< "$out"
+  then not_ok "systemd-analyze complained: $out"
+  else ok "systemd accepts the unit"
+  fi
+else
+  ok "systemd-analyze not present, skipped"
+fi
+
+start_case "the setup driver leaves networking to DietPi"
+if grep -q "wpa_supplicant.conf" "$REPO/setup/pi/first-boot.sh" &&
+   grep -v '^\s*#' "$REPO/setup/pi/first-boot.sh" | grep -q "wpa_supplicant.conf"
+then
+  not_ok "the setup driver still writes wpa_supplicant.conf"
+else
+  ok "no wpa_supplicant.conf handling in the setup driver"
+fi
+if grep -qE '^\s*(nmcli|iwconfig|wpa_cli)' "$REPO/setup/pi/first-boot.sh"
+then not_ok "the setup driver still drives the wifi adapter"
+else ok "the setup driver does not touch the wifi adapter"
+fi
+
+start_case "the access point path stops instead of fighting DietPi's network stack"
+out=$(
+  cd "$REPO/setup/pi" &&
+  AP_SSID=test AP_PASS=supersecret bash ./configure-ap.sh 2>&1
+)
+rc=$?
+if [ "$rc" -ne 0 ] && grep -q "NetworkManager" <<< "$out"
+then ok "refuses to configure an AP without NetworkManager"
+else not_ok "expected a NetworkManager complaint, got rc=$rc: $out"
+fi
+
+start_case "packages DietPi lacks are bootstrapped by setup"
+# The list used to live in pi-gen's 00-packages and was baked into the image.
+pkg_list=$(sed -n '/^readonly TESLAUSB_PACKAGES=(/,/^)/p' "$REPO/setup/pi/setup-teslausb")
+if [ -n "$pkg_list" ]
+then
+  ok "setup carries an explicit package list"
+  for pkg in xfsprogs dosfstools exfatprogs dos2unix autofs nginx fcgiwrap python3-pip
+  do
+    if grep -qE "^\s+${pkg}\s*$" <<< "$pkg_list"
+    then ok "$pkg is bootstrapped"
+    else not_ok "$pkg is missing from the package list"
+    fi
+  done
+  # and they really are absent from a bare DietPi, which is why this is needed
+  absent=0
+  while read -r pkg
+  do
+    dpkg-query -W -f='${Status}' "$pkg" 2> /dev/null | grep -q "install ok installed" || absent=$(( absent + 1 ))
+  done < <(grep -oE '^\s+[a-z0-9][a-z0-9.+-]+$' <<< "$pkg_list" | tr -d ' ')
+  if [ "$absent" -gt 0 ]
+  then ok "$absent of them are indeed missing from a bare DietPi"
+  else not_ok "expected a bare DietPi to be missing some of these packages"
+  fi
+else
+  not_ok "no package list found in setup-teslausb"
+fi
+
+start_case "DietPi-RAMlog is removed before the root filesystem is made read-only"
+# Reproduce DietPi's ramlog setup, then run just that part of the read-only
+# script and check it cleans up. dietpi-software is stubbed because it needs a
+# full DietPi runtime.
+cp /etc/fstab /tmp/fstab.bak
+grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab || \
+  echo "tmpfs /var/log tmpfs size=50M,noatime,lazytime,nodev,nosuid" >> /etc/fstab
+cat > "$STUBS/dietpi-software" <<'EOF'
+#!/bin/bash
+echo "dietpi-software $*" >> /tmp/dietpi-software.calls
+EOF
+chmod +x "$STUBS/dietpi-software"
+mkdir -p /tmp/fakedietpi
+cp "$STUBS/dietpi-software" /tmp/fakedietpi/dietpi-software
+rm -f /tmp/dietpi-software.calls
+(
+  set -uo pipefail
+  # called by the function eval'd in below
+  # shellcheck disable=SC2329
+  log_progress () { echo "ro: $*"; }
+  # point the function at the stub instead of the real dietpi-software
+  eval "$(sed -n '/^function remove_dietpi_ramlog/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh" |
+          sed 's|/boot/dietpi/dietpi-software|/tmp/fakedietpi/dietpi-software|g')"
+  remove_dietpi_ramlog
+) > /tmp/ramlog.log 2>&1
+if grep -q "dietpi-software uninstall 103" /tmp/dietpi-software.calls 2> /dev/null
+then ok "removed through dietpi-software so DietPi's state stays consistent"
+else not_ok "did not call 'dietpi-software uninstall 103' (log: $(cat /tmp/ramlog.log))"
+fi
+if grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab
+then not_ok "DietPi's /var/log tmpfs entry is still in /etc/fstab"
+else ok "the /var/log tmpfs entry was removed from /etc/fstab"
+fi
+if [ -d /var/log ]
+then ok "/var/log is left as a real directory"
+else not_ok "/var/log is missing"
+fi
+cp /tmp/fstab.bak /etc/fstab
+
+start_case "removing DietPi-RAMlog is a no-op when it is not in use"
+sed -i '/[[:blank:]]\/var\/log[[:blank:]]/d' /etc/fstab
+rm -f /tmp/dietpi-software.calls
+(
+  set -uo pipefail
+  # called by the function eval'd in below
+  # shellcheck disable=SC2329
+  log_progress () { echo "ro: $*"; }
+  eval "$(sed -n '/^function remove_dietpi_ramlog/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh" |
+          sed 's|/boot/dietpi/dietpi-software|/tmp/fakedietpi/dietpi-software|g')"
+  remove_dietpi_ramlog
+) > /tmp/ramlog2.log 2>&1
+if [ -e /tmp/dietpi-software.calls ]
+then not_ok "called dietpi-software even though RAMlog was not in use"
+else ok "did nothing"
+fi
+assert_grep "not in use" /tmp/ramlog2.log "said so"
+cp /tmp/fstab.bak /etc/fstab
+
+# ===========================================================================
+banner "setup driver: first-boot.sh"
+# ===========================================================================
+# This is what replaced /etc/rc.local. It runs before teslausb exists, so
+# everything it reaches for is stubbed: reboot, curl, the setup script itself,
+# and dos2unix (which a bare DietPi does not have).
+
+setup_driver_env () {
+  rm -f /tmp/reboot.calls /tmp/curl.calls /tmp/setup.calls
+  rm -rf /teslausb /tmp/bootpart
+  mkdir -p /tmp/bootpart
+  ln -sfn /tmp/bootpart /teslausb
+  rm -f /root/teslausb_setup_variables.conf /root/bin/setup-teslausb
+
+  cat > "$STUBS/reboot" <<'EOF'
+#!/bin/bash
+echo rebooted >> /tmp/reboot.calls
+exit 0
+EOF
+  cat > "$STUBS/curl" <<'EOF'
+#!/bin/bash
+echo "curl $*" >> /tmp/curl.calls
+# emulate a successful download into the -o target
+out=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out="$a"
+  prev="$a"
+done
+[ -n "$out" ] && echo "#!/bin/bash" > "$out"
+[ -e /tmp/curl.should.fail ] && exit 22
+exit 0
+EOF
+  cat > "$STUBS/dos2unix" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  cat > "$STUBS/sntp" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$STUBS/reboot" "$STUBS/curl" "$STUBS/dos2unix" "$STUBS/sntp"
+}
+
+install_fake_setup () {
+  # a setup-teslausb that reports success or failure on demand
+  cat > /root/bin/setup-teslausb <<'EOF'
+#!/bin/bash
+echo "setup ran" >> /tmp/setup.calls
+[ -e /tmp/setup.should.fail ] && exit 1
+touch /teslausb/TESLAUSB_SETUP_FINISHED
+exit 0
+EOF
+  chmod +x /root/bin/setup-teslausb
+}
+
+run_driver () {
+  ( trace_bash "$REPO/setup/pi/first-boot.sh" ) > /tmp/driver.log 2>&1
+  DRIVER_RC=$?
+  return 0
+}
+
+start_case "creates the /teslausb symlink when it is missing"
+setup_driver_env
+rm -rf /teslausb
+install_fake_setup
+touch /boot/TESLAUSB_SETUP_FINISHED
+run_driver
+if [ -L /teslausb ]
+then ok "/teslausb is a symlink"
+else not_ok "/teslausb was not created (log: $(cat /tmp/driver.log))"
+fi
+assert_eq "$(readlink /teslausb)" "/boot" "points at the DietPi boot partition"
+rm -f /boot/TESLAUSB_SETUP_FINISHED
+
+start_case "does nothing once setup has finished"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+run_driver
+assert_eq "$DRIVER_RC" 0 "exits 0"
+assert_no_file /tmp/setup.calls "setup was not re-run"
+assert_no_file /tmp/reboot.calls "did not reboot"
+
+start_case "runs setup when the finished marker is absent"
+setup_driver_env
+install_fake_setup
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+run_driver
+assert_file /tmp/setup.calls "setup was run"
+assert_file /tmp/bootpart/TESLAUSB_SETUP_STARTED "started marker written"
+assert_file /tmp/reboot.calls "rebooted afterwards"
+
+start_case "moves a config left on the boot partition to /root"
+setup_driver_env
+install_fake_setup
+echo "export ARCHIVE_SYSTEM=none" > /tmp/bootpart/teslausb_setup_variables.conf
+run_driver
+assert_file /root/teslausb_setup_variables.conf "config moved to /root"
+assert_no_file /tmp/bootpart/teslausb_setup_variables.conf "removed from the boot partition"
+
+start_case "runs run_once and renames it"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+cat > /tmp/bootpart/run_once <<'EOF'
+#!/bin/bash
+touch /tmp/run_once.ran
+EOF
+run_driver
+assert_file /tmp/run_once.ran "run_once executed"
+assert_file /tmp/bootpart/ran_once "renamed to ran_once"
+assert_no_file /tmp/bootpart/run_once "run_once no longer present"
+rm -f /tmp/run_once.ran
+
+start_case "a broken config file is reported instead of being sourced blindly"
+setup_driver_env
+install_fake_setup
+printf 'this is (not valid bash\n' > /root/teslausb_setup_variables.conf
+run_driver
+assert_grep "Error in" /tmp/driver.log "reported the bad config"
+assert_no_file /tmp/setup.calls "did not continue into setup"
+
+start_case "downloads setup-teslausb when it is not present yet"
+setup_driver_env
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+rm -f /root/bin/setup-teslausb
+run_driver
+assert_file /tmp/curl.calls "fetched the setup script"
+assert_grep "setup/pi/setup-teslausb" /tmp/curl.calls "fetched from the right path"
+
+start_case "a failed download is reported and does not reboot"
+setup_driver_env
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+rm -f /root/bin/setup-teslausb
+touch /tmp/curl.should.fail
+run_driver
+assert_grep "Failed to retrieve setup script" /tmp/driver.log "explained the failure"
+assert_no_file /tmp/reboot.calls "did not reboot"
+rm -f /tmp/curl.should.fail
+
+start_case "a failing setup run does not reboot into a loop"
+setup_driver_env
+install_fake_setup
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+touch /tmp/setup.should.fail
+run_driver
+assert_file /tmp/setup.calls "setup was attempted"
+assert_no_file /tmp/reboot.calls "did not reboot after the failure"
+rm -f /tmp/setup.should.fail
+
+start_case "says so when there is no config at all"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+run_driver
+assert_grep "no config file found" /tmp/driver.log "reported the missing config"
+
+start_case "mentions the sample when only the sample is present"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+touch /tmp/bootpart/teslausb_setup_variables.conf.sample
+run_driver
+assert_grep "sample file is present" /tmp/driver.log "pointed at the sample"
+
+start_case "prefers /boot/firmware when the image splits the boot partition"
+setup_driver_env
+install_fake_setup
+mkdir -p /boot/firmware
+cp /etc/fstab /tmp/fstab.driver.bak
+echo "/dev/mmcblk0p1 /boot/firmware vfat defaults 0 2" >> /etc/fstab
+rm -rf /teslausb
+touch /boot/firmware/TESLAUSB_SETUP_FINISHED
+run_driver
+assert_eq "$(readlink /teslausb)" "/boot/firmware" "symlinked to /boot/firmware"
+cp /tmp/fstab.driver.bak /etc/fstab
+rm -rf /boot/firmware
+
+start_case "remounts the root filesystem read-write when teslausb is already installed"
+setup_driver_env
+install_fake_setup
+cat > /root/bin/remountfs_rw <<'EOF'
+#!/bin/bash
+echo remounted >> /tmp/remount.calls
+EOF
+chmod +x /root/bin/remountfs_rw
+rm -f /tmp/remount.calls
+echo "export ARCHIVE_SYSTEM=none" > /tmp/bootpart/teslausb_setup_variables.conf
+run_driver
+assert_file /tmp/remount.calls "asked for a writeable root before touching it"
+rm -f /root/bin/remountfs_rw
+
+start_case "creates /root/bin when it does not exist"
+setup_driver_env
+mv /root/bin /root/bin.saved
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+run_driver
+if [ -d /root/bin ]
+then ok "/root/bin created"
+else not_ok "/root/bin was not created"
+fi
+rm -rf /root/bin
+mv /root/bin.saved /root/bin
+
+start_case "warns when there is no config but setup has not finished"
+setup_driver_env
+install_fake_setup
+run_driver
+assert_grep "Setup appears not to have completed" /tmp/driver.log "warned about the missing config"
+
+start_case "wifi credentials from the teslausb config are handed to DietPi"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+rm -f /teslausb/WIFI_ENABLED /boot/dietpi-wifi.txt
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+export TESLAUSB_HOSTNAME=teslausb
+EOF
+# stand in for DietPi's wifi tooling
+mkdir -p /boot/dietpi/func
+for f in dietpi-wifidb dietpi-set_hardware change_hostname
+do
+  cat > "/boot/dietpi/func/$f" <<EOF
+#!/bin/bash
+echo "$f \$*" >> /tmp/dietpi-wifi.calls
+exit 0
+EOF
+  chmod +x "/boot/dietpi/func/$f"
+done
+rm -f /tmp/dietpi-wifi.calls
+run_driver
+assert_file /boot/dietpi-wifi.txt "wrote DietPi's wifi credential file"
+assert_grep "aWIFI_SSID\[0\]='MyNetwork'" /boot/dietpi-wifi.txt "SSID recorded in DietPi's format"
+assert_grep "aWIFI_KEY\[0\]='sekrit pass'" /boot/dietpi-wifi.txt "passphrase recorded"
+assert_grep "aWIFI_KEYMGR\[0\]='WPA-PSK'" /boot/dietpi-wifi.txt "key management set"
+assert_grep "dietpi-wifidb 1" /tmp/dietpi-wifi.calls "asked DietPi to apply the credentials"
+assert_grep "wifimodules enable" /tmp/dietpi-wifi.calls "enabled the wifi modules"
+assert_file /tmp/bootpart/WIFI_ENABLED "marked wifi as configured"
+assert_file /tmp/reboot.calls "rebooted to bring wifi up"
+if [ "$(stat -c %a /boot/dietpi-wifi.txt)" = "600" ]
+then ok "credential file is not world readable"
+else not_ok "credential file mode is $(stat -c %a /boot/dietpi-wifi.txt), expected 600"
+fi
+
+start_case "makes the root writeable before writing the wifi credentials"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+cat > /root/bin/remountfs_rw <<'EOF'
+#!/bin/bash
+echo remounted >> /tmp/remount.calls
+EOF
+chmod +x /root/bin/remountfs_rw
+rm -f /tmp/remount.calls
+for f in dietpi-wifidb dietpi-set_hardware change_hostname
+do
+  printf '#!/bin/bash\nexit 0\n' > "/boot/dietpi/func/$f"
+  chmod +x "/boot/dietpi/func/$f"
+done
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_file /tmp/remount.calls "remounted the root read-write first"
+assert_file /boot/dietpi-wifi.txt "then wrote the credentials"
+rm -f /root/bin/remountfs_rw
+
+start_case "wifi is configured only once"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED /tmp/bootpart/WIFI_ENABLED
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+rm -f /tmp/dietpi-wifi.calls
+run_driver
+assert_no_file /tmp/dietpi-wifi.calls "DietPi's wifi tooling was not called again"
+assert_no_file /tmp/reboot.calls "did not reboot again"
+
+start_case "no wifi variables means DietPi's own network config is left alone"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+rm -f /tmp/dietpi-wifi.calls
+run_driver
+assert_no_file /tmp/dietpi-wifi.calls "did not touch the network"
+assert_grep "skipping wifi setup" /tmp/driver.log "said why"
+
+start_case "falls back gracefully when DietPi's wifi tooling is missing"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+mv /boot/dietpi/func/dietpi-wifidb /tmp/wifidb.saved
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_grep "dietpi-wifidb not found" /tmp/driver.log "said what was missing"
+assert_no_file /tmp/bootpart/WIFI_ENABLED "did not claim wifi was configured"
+mv /tmp/wifidb.saved /boot/dietpi/func/dietpi-wifidb
+
+start_case "reports it when DietPi cannot apply the credentials"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+cat > /boot/dietpi/func/dietpi-wifidb <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x /boot/dietpi/func/dietpi-wifidb
+cat > /boot/dietpi/func/dietpi-set_hardware <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x /boot/dietpi/func/dietpi-set_hardware
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+export TESLAUSB_HOSTNAME=othername
+EOF
+cat > /boot/dietpi/func/change_hostname <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x /boot/dietpi/func/change_hostname
+run_driver
+assert_grep "could not apply the wifi credentials" /tmp/driver.log "reported the failure"
+assert_grep "could not enable the wifi modules" /tmp/driver.log "reported the module failure"
+assert_grep "could not change the host name" /tmp/driver.log "reported the hostname failure"
+# still proceeds, so a bad wifi tool does not brick setup
+assert_file /tmp/bootpart/WIFI_ENABLED "carried on regardless"
+
+start_case "adds the DietPi wifi flag when the key is absent entirely"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+for f in dietpi-wifidb dietpi-set_hardware change_hostname
+do
+  printf '#!/bin/bash\nexit 0\n' > "/boot/dietpi/func/$f"
+  chmod +x "/boot/dietpi/func/$f"
+done
+cp /boot/dietpi.txt /tmp/dietpi.txt.bak2
+grep -v '^AUTO_SETUP_NET_WIFI_ENABLED=' /boot/dietpi.txt > /tmp/dietpi.trimmed
+cp /tmp/dietpi.trimmed /boot/dietpi.txt
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_grep "AUTO_SETUP_NET_WIFI_ENABLED=1" /boot/dietpi.txt "appended the flag"
+cp /tmp/dietpi.txt.bak2 /boot/dietpi.txt
+
+start_case "AUTO_SETUP_NET_WIFI_ENABLED is turned on so DietPi keeps wifi up"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+rm -f /teslausb/WIFI_ENABLED
+printf 'AUTO_SETUP_NET_WIFI_ENABLED=0\n' > /boot/dietpi.txt.test
+cp /boot/dietpi.txt /tmp/dietpi.txt.bak
+printf 'AUTO_SETUP_NET_WIFI_ENABLED=0\n' > /boot/dietpi.txt
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_grep "AUTO_SETUP_NET_WIFI_ENABLED=1" /boot/dietpi.txt "flipped the DietPi wifi flag on"
+cp /tmp/dietpi.txt.bak /boot/dietpi.txt
+
+# ===========================================================================
+banner "pre-boot configuration: tools/prepare-boot-partition.sh"
+# ===========================================================================
+# This is what keeps teslausb plug and play: one config file on the boot
+# partition, everything else generated from it before the first boot.
+
+fake_boot_partition () {
+  rm -rf /tmp/bootfs
+  mkdir -p /tmp/bootfs
+  # a minimal but realistic dietpi.txt
+  cat > /tmp/bootfs/dietpi.txt <<'EOF'
+AUTO_SETUP_AUTOMATED=0
+AUTO_SETUP_GLOBAL_PASSWORD=dietpi
+AUTO_SETUP_NET_WIFI_ENABLED=0
+AUTO_SETUP_NET_HOSTNAME=DietPi
+AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0
+SURVEY_OPTED_IN=-1
+EOF
+}
+
+run_prepare () {
+  ( trace_bash "$REPO/tools/prepare-boot-partition.sh" "$@" ) > /tmp/prepare.log 2>&1
+  PREPARE_RC=$?
+  return 0
+}
+
+start_case "generates every pre-boot file from the teslausb config"
+fake_boot_partition
+cat > /tmp/my.conf <<'EOF'
+export SSID='HomeNet'
+export WIFIPASS='hunter2hunter2'
+export WIFI_COUNTRY=NL
+export TESLAUSB_HOSTNAME=teslausb-model3
+export ARCHIVE_SYSTEM=none
+EOF
+run_prepare /tmp/bootfs /tmp/my.conf
+assert_eq "$PREPARE_RC" 0 "exits 0"
+assert_file /tmp/bootfs/teslausb_setup_variables.conf "teslausb config copied to the boot partition"
+assert_file /tmp/bootfs/Automation_Custom_Script.sh "DietPi bootstrap copied"
+if [ -x /tmp/bootfs/Automation_Custom_Script.sh ]
+then ok "bootstrap is executable, which DietPi requires"
+else not_ok "bootstrap is not executable"
+fi
+assert_grep "AUTO_SETUP_AUTOMATED=1" /tmp/bootfs/dietpi.txt "first boot is unattended"
+assert_grep "AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1" /tmp/bootfs/dietpi.txt "bootstrap will be run"
+assert_grep "AUTO_SETUP_NET_HOSTNAME=teslausb-model3" /tmp/bootfs/dietpi.txt "hostname taken from the config"
+assert_grep "AUTO_SETUP_NET_WIFI_ENABLED=1" /tmp/bootfs/dietpi.txt "wifi enabled for the first boot"
+assert_grep "AUTO_SETUP_NET_WIFI_COUNTRY_CODE=NL" /tmp/bootfs/dietpi.txt "country code taken from the config"
+assert_file /tmp/bootfs/dietpi-wifi.txt "DietPi wifi credentials written"
+assert_grep "aWIFI_SSID\[0\]='HomeNet'" /tmp/bootfs/dietpi-wifi.txt "SSID written"
+assert_grep "aWIFI_KEY\[0\]='hunter2hunter2'" /tmp/bootfs/dietpi-wifi.txt "passphrase written"
+if [ "$(stat -c %a /tmp/bootfs/dietpi-wifi.txt)" = "600" ]
+then ok "credentials are not world readable"
+else not_ok "credential file mode is $(stat -c %a /tmp/bootfs/dietpi-wifi.txt)"
+fi
+
+start_case "SSH is not left disabled on a headless device"
+fake_boot_partition
+sed -i 's/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=-1/' /tmp/bootfs/dietpi.txt
+run_prepare /tmp/bootfs /tmp/my.conf
+assert_grep "AUTO_SETUP_SSH_SERVER_INDEX=0" /tmp/bootfs/dietpi.txt "re-enabled SSH"
+
+start_case "an SSH server the user chose is left alone"
+fake_boot_partition
+sed -i 's/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=-2/' /tmp/bootfs/dietpi.txt
+run_prepare /tmp/bootfs /tmp/my.conf
+assert_grep "AUTO_SETUP_SSH_SERVER_INDEX=-2" /tmp/bootfs/dietpi.txt "kept the user's choice"
+
+start_case "existing dietpi.txt settings are preserved"
+fake_boot_partition
+run_prepare /tmp/bootfs /tmp/my.conf
+assert_grep "AUTO_SETUP_GLOBAL_PASSWORD=dietpi" /tmp/bootfs/dietpi.txt "unrelated keys left alone"
+assert_grep "SURVEY_OPTED_IN=-1" /tmp/bootfs/dietpi.txt "and so are the rest"
+
+start_case "an ethernet-only config leaves the network settings alone"
+fake_boot_partition
+cat > /tmp/eth.conf <<'EOF'
+export ARCHIVE_SYSTEM=none
+EOF
+run_prepare /tmp/bootfs /tmp/eth.conf
+assert_no_file /tmp/bootfs/dietpi-wifi.txt "no wifi credential file"
+assert_grep "AUTO_SETUP_NET_WIFI_ENABLED=0" /tmp/bootfs/dietpi.txt "wifi left off"
+assert_grep "leaving DietPi's network settings alone" /tmp/prepare.log "said so"
+
+start_case "refuses to write to something that is not a DietPi boot partition"
+rm -rf /tmp/notboot
+mkdir -p /tmp/notboot
+run_prepare /tmp/notboot /tmp/my.conf
+if [ "$PREPARE_RC" -ne 0 ]
+then ok "exits non-zero"
+else not_ok "wrote to a directory that is not a boot partition"
+fi
+assert_grep "does not look like a DietPi boot partition" /tmp/prepare.log "explained why"
+assert_no_file /tmp/notboot/Automation_Custom_Script.sh "nothing was written"
+
+start_case "rejects a config file with a syntax error"
+fake_boot_partition
+printf 'export SSID=(unclosed\n' > /tmp/bad.conf
+run_prepare /tmp/bootfs /tmp/bad.conf
+if [ "$PREPARE_RC" -ne 0 ]
+then ok "exits non-zero"
+else not_ok "accepted a broken config"
+fi
+assert_grep "has an error in it" /tmp/prepare.log "explained why"
+
+start_case "reports usage when given no arguments"
+run_prepare
+if [ "$PREPARE_RC" -ne 0 ]
+then ok "exits non-zero"
+else not_ok "should have refused"
+fi
+assert_grep "usage" /tmp/prepare.log "printed usage"
+
+start_case "reports a missing boot partition directory"
+run_prepare /tmp/definitely-not-here /tmp/my.conf
+assert_grep "not a directory" /tmp/prepare.log "explained the problem"
+
+start_case "reports a missing config file"
+fake_boot_partition
+run_prepare /tmp/bootfs /tmp/definitely-not-a-config
+assert_grep "does not exist" /tmp/prepare.log "explained the problem"
+
+# ===========================================================================
+banner "DietPi bootstrap: Automation_Custom_Script.sh"
+# ===========================================================================
+# DietPi runs this once at the end of its own first boot. It must remove
+# DietPi-RAMlog, install the setup driver and its unit, and hand over.
+
+bootstrap_env () {
+  rm -f /tmp/reboot.calls /tmp/curl.calls /tmp/dietpi-software.calls /tmp/apt.calls
+  rm -f /lib/systemd/system/teslausb-setup.service /root/bin/first-boot.sh
+  rm -f /tmp/systemctl.calls
+  cp /etc/fstab /tmp/fstab.bak
+  cat > "$STUBS/apt-get" <<'EOF'
+#!/bin/bash
+echo "apt-get $*" >> /tmp/apt.calls
+exit 0
+EOF
+  chmod +x "$STUBS/apt-get"
+  # the bootstrap calls dietpi-software by absolute path, so shadow it there
+  mkdir -p /tmp/fakedietpi
+  cat > /tmp/fakedietpi/dietpi-software <<'EOF'
+#!/bin/bash
+echo "dietpi-software $*" >> /tmp/dietpi-software.calls
+exit 0
+EOF
+  chmod +x /tmp/fakedietpi/dietpi-software
+}
+
+run_bootstrap () {
+  # redirect the absolute dietpi-software path and the handover to the driver,
+  # which is covered by its own cases above
+  mkdir -p /tmp/bootstrap
+  sed -e 's|/boot/dietpi/dietpi-software|/tmp/fakedietpi/dietpi-software|g' \
+      -e 's|^/root/bin/first-boot.sh$|echo handover >> /tmp/handover.calls|' \
+      "$REPO/dietpi/Automation_Custom_Script.sh" > /tmp/bootstrap/Automation_Custom_Script.sh
+  rm -f /tmp/handover.calls
+  ( trace_bash /tmp/bootstrap/Automation_Custom_Script.sh ) > /tmp/bootstrap.log 2>&1
+  BOOTSTRAP_RC=$?
+  return 0
+}
+
+start_case "removes DietPi-RAMlog before anything else"
+bootstrap_env
+grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab || \
+  echo "tmpfs /var/log tmpfs size=50M,noatime,lazytime,nodev,nosuid" >> /etc/fstab
+run_bootstrap
+assert_grep "uninstall 103" /tmp/dietpi-software.calls "uninstalled DietPi-RAMlog"
+cp /tmp/fstab.bak /etc/fstab
+
+start_case "installs the setup driver and enables its unit"
+bootstrap_env
+run_bootstrap
+assert_eq "$BOOTSTRAP_RC" 0 "exits 0"
+assert_file /root/bin/first-boot.sh "setup driver downloaded"
+if [ -x /root/bin/first-boot.sh ]
+then ok "setup driver is executable"
+else not_ok "setup driver is not executable"
+fi
+assert_file /lib/systemd/system/teslausb-setup.service "unit downloaded"
+assert_grep "systemctl enable teslausb-setup.service" /tmp/systemctl.calls "unit enabled"
+assert_grep "daemon-reload" /tmp/systemctl.calls "systemd reloaded"
+assert_file /tmp/handover.calls "handed over to the setup driver"
+
+start_case "installs dos2unix when DietPi does not have it"
+bootstrap_env
+# hide the stub so the check sees a system without dos2unix
+mv "$STUBS/dos2unix" /tmp/dos2unix.hidden 2> /dev/null || true
+run_bootstrap
+if grep -q "install.*dos2unix" /tmp/apt.calls 2> /dev/null
+then ok "installed dos2unix"
+else not_ok "did not install dos2unix (apt calls: $(cat /tmp/apt.calls 2>/dev/null))"
+fi
+mv /tmp/dos2unix.hidden "$STUBS/dos2unix" 2> /dev/null || true
+
+start_case "a failed download stops the bootstrap"
+bootstrap_env
+touch /tmp/curl.should.fail
+run_bootstrap
+if [ "$BOOTSTRAP_RC" -ne 0 ]
+then ok "exits non-zero"
+else not_ok "reported success despite a failed download"
+fi
+assert_grep "FATAL" /tmp/bootstrap.log "said what went wrong"
+assert_no_file /tmp/handover.calls "did not hand over"
+rm -f /tmp/curl.should.fail
+
+start_case "carries on when DietPi-RAMlog cannot be uninstalled"
+bootstrap_env
+grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab || \
+  echo "tmpfs /var/log tmpfs size=50M,noatime,lazytime,nodev,nosuid" >> /etc/fstab
+printf '#!/bin/bash\nexit 1\n' > /tmp/fakedietpi/dietpi-software
+chmod +x /tmp/fakedietpi/dietpi-software
+run_bootstrap
+assert_grep "could not uninstall DietPi-RAMlog" /tmp/bootstrap.log "warned about it"
+assert_file /root/bin/first-boot.sh "still installed the setup driver"
+cp /tmp/fstab.bak /etc/fstab
+
+start_case "carries on when dos2unix cannot be installed"
+bootstrap_env
+mv "$STUBS/dos2unix" /tmp/dos2unix.hidden2 2> /dev/null || true
+printf '#!/bin/bash\necho "apt-get $*" >> /tmp/apt.calls\nexit 1\n' > "$STUBS/apt-get"
+chmod +x "$STUBS/apt-get"
+run_bootstrap
+assert_grep "could not install dos2unix" /tmp/bootstrap.log "warned about it"
+mv /tmp/dos2unix.hidden2 "$STUBS/dos2unix" 2> /dev/null || true
+
+start_case "logs to the boot partition where a headless user can read it"
+bootstrap_env
+run_bootstrap
+assert_file /boot/teslausb-headless-setup.log "wrote the headless setup log"
+
+# ===========================================================================
 banner "installer: install_usb_link_watchdog"
 # ===========================================================================
 # configure.sh is a large script that expects a full teslausb setup, so extract
 # just the function under test and drive it with stubs for the helpers it calls
 # (copy_script, log_progress) and for systemctl.
-
-STUBS=/tmp/stubs
-mkdir -p "$STUBS" /lib/systemd/system /etc/systemd/system /root/bin
-cat > "$STUBS/systemctl" <<'EOF'
-#!/bin/bash
-echo "systemctl $*" >> /tmp/systemctl.calls
-EOF
-chmod +x "$STUBS/systemctl"
-export PATH="$STUBS:$PATH"
 
 run_installer () {
   rm -f /tmp/systemctl.calls
@@ -229,7 +1079,15 @@ chmod +x "$STUBS/reboot"
 
 watchdog () {
   rm -f /tmp/reboot.calls
-  env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" bash /root/bin/usb-link-watchdog.sh
+  if [ -n "${COVERAGE:-}" ]
+  then
+    mkdir -p "$TRACE_DIR"
+    env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" \
+        BASH_ENV="$COV_INIT" COV_TRACE="$TRACE_DIR/usb-link-watchdog.sh.$$.trace" \
+        bash /root/bin/usb-link-watchdog.sh
+  else
+    env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" bash /root/bin/usb-link-watchdog.sh
+  fi
   WD_RC=$?
   return 0
 }
@@ -300,6 +1158,23 @@ watchdog
 assert_no_file /tmp/reboot.calls "no reboot"
 echo configured > /run/udc/20980000.usb/state
 
+start_case "the uptime gate holds off during early boot"
+set_cam_idle 45
+rm -f /mutable/usb-link-watchdog.last-reboot
+printf '120.00 120.00\n' > /tmp/fake-uptime
+rm -f /tmp/reboot.calls
+if [ -n "${COVERAGE:-}" ]
+then
+  env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" UPTIME_FILE=/tmp/fake-uptime \
+      BASH_ENV="$COV_INIT" COV_TRACE="$TRACE_DIR/usb-link-watchdog.sh.uptime.trace" \
+      bash /root/bin/usb-link-watchdog.sh
+else
+  env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" UPTIME_FILE=/tmp/fake-uptime \
+      bash /root/bin/usb-link-watchdog.sh
+fi
+assert_eq "$?" 0 "exits 0"
+assert_no_file /tmp/reboot.calls "no reboot two minutes after boot"
+
 start_case "a missing cam disk is reported, not rebooted through"
 rm -f /backingfiles/cam_disk.bin
 watchdog
@@ -309,6 +1184,13 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+if [ -n "${COVERAGE:-}" ]
+then
+  banner "coverage"
+  export TRACE_DIR
+  bash "$REPO/tests/coverage.sh" ${COVERAGE_MIN:+--min "$COVERAGE_MIN"} || fail_count=$(( fail_count + 1 ))
+fi
+
 printf '\n=== summary ===\n'
 printf 'integration: %d passed, %d failed\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ] || exit 1
