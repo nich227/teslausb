@@ -61,7 +61,7 @@ export default function Logs() {
                 <Toggle checked={auto} onChange={(e) => setAuto(e.detail.checked)}>
                   Auto-refresh
                 </Toggle>
-                <Button iconName="refresh" onClick={load}>
+                <Button iconName="refresh" onClick={() => load(true)}>
                   Refresh
                 </Button>
                 <Button iconName="download" onClick={() => downloadText(cur.file, text)}>
