@@ -72,6 +72,7 @@ SSID=$(conf_value SSID "")
 WIFIPASS=$(conf_value WIFIPASS "")
 WIFI_COUNTRY=$(conf_value WIFI_COUNTRY US)
 HOSTNAME_WANTED=$(conf_value TESLAUSB_HOSTNAME teslausb)
+OS_PASSWORD=$(conf_value OS_PASSWORD "")
 
 # ---------------------------------------------------------------------------
 # Copy the teslausb pieces
@@ -101,14 +102,32 @@ set_dietpi_key AUTO_SETUP_AUTOMATED 1
 set_dietpi_key AUTO_SETUP_CUSTOM_SCRIPT_EXEC 1
 set_dietpi_key AUTO_SETUP_NET_HOSTNAME "$HOSTNAME_WANTED"
 
+# The login password for root and the dietpi user. The prebuilt Raspberry Pi OS
+# image shipped with a known default (user pi, password raspberry); DietPi's
+# equivalent is this key, and leaving it at DietPi's default is just as weak.
+if [ -n "$OS_PASSWORD" ]
+then
+  set_dietpi_key AUTO_SETUP_GLOBAL_PASSWORD "$OS_PASSWORD"
+else
+  current_pw=$(sed -n '/^[[:blank:]]*AUTO_SETUP_GLOBAL_PASSWORD=/{s/^[^=]*=//p;q}' "$BOOT/dietpi.txt")
+  if [ "$current_pw" = "dietpi" ]
+  then
+    log "WARNING: the login password is still DietPi's default ('dietpi')."
+    log "         Set OS_PASSWORD in your config, or edit AUTO_SETUP_GLOBAL_PASSWORD"
+    log "         in dietpi.txt, before putting this device on your network."
+  fi
+fi
+
 # The prebuilt Raspberry Pi OS image had SSH enabled out of the box (pi-gen
 # touched /boot/ssh). Keep that guarantee: -1 would disable SSH entirely and
 # leave a headless device unreachable.
-if grep -q '^AUTO_SETUP_SSH_SERVER_INDEX=-1' "$BOOT/dietpi.txt"
+ssh_index=$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' "$BOOT/dietpi.txt")
+if [ -z "$ssh_index" ] || [ "$ssh_index" = "-1" ]
 then
+  # missing or explicitly disabled: a headless device in a car needs SSH
   set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX 0
 else
-  log "dietpi.txt: leaving AUTO_SETUP_SSH_SERVER_INDEX as it is"
+  log "dietpi.txt: leaving AUTO_SETUP_SSH_SERVER_INDEX as it is ($ssh_index)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -128,8 +147,11 @@ aWIFI_KEYMGR[0]='WPA-PSK'
 EOF
   chmod 600 "$BOOT/dietpi-wifi.txt"
 else
-  log "no SSID/WIFIPASS in the config, leaving DietPi's network settings alone"
-  log "    (fine for an ethernet install)"
+  log "WARNING: no SSID/WIFIPASS in the config."
+  log "WARNING: this device will have no network on first boot, and DietPi needs one"
+  log "WARNING: to finish its own setup before teslausb is installed. A Pi in a car"
+  log "WARNING: has no ethernet, so unless you are setting this up on a desk with a"
+  log "WARNING: wired connection, set SSID and WIFIPASS in your config and re-run."
 fi
 
 sync
@@ -137,5 +159,8 @@ sync
 echo
 echo "Done. $BOOT is ready:"
 echo "  - eject the card and boot the device"
-echo "  - DietPi does its own first-boot setup, then starts teslausb setup"
+echo "  - DietPi does its own first-boot setup unattended, then starts teslausb setup"
 echo "  - progress is logged to teslausb-headless-setup.log on this partition"
+echo
+echo "Log in as 'root' or 'dietpi' (DietPi has no 'pi' user), with the password"
+echo "from AUTO_SETUP_GLOBAL_PASSWORD in dietpi.txt."

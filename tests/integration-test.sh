@@ -813,6 +813,13 @@ sed -i 's/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO
 run_prepare /tmp/bootfs /tmp/my.conf
 assert_grep "AUTO_SETUP_SSH_SERVER_INDEX=0" /tmp/bootfs/dietpi.txt "re-enabled SSH"
 
+start_case "SSH is configured even when the key is absent from dietpi.txt"
+fake_boot_partition
+grep -v AUTO_SETUP_SSH_SERVER_INDEX /tmp/bootfs/dietpi.txt > /tmp/dt && cp /tmp/dt /tmp/bootfs/dietpi.txt
+run_prepare /tmp/bootfs /tmp/my.conf
+assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
+  "0" "SSH server index added"
+
 start_case "an SSH server the user chose is left alone"
 fake_boot_partition
 sed -i 's/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=-2/' /tmp/bootfs/dietpi.txt
@@ -825,15 +832,105 @@ run_prepare /tmp/bootfs /tmp/my.conf
 assert_grep "AUTO_SETUP_GLOBAL_PASSWORD=dietpi" /tmp/bootfs/dietpi.txt "unrelated keys left alone"
 assert_grep "SURVEY_OPTED_IN=-1" /tmp/bootfs/dietpi.txt "and so are the rest"
 
-start_case "an ethernet-only config leaves the network settings alone"
+start_case "DietPi's own parser reads back every value we wrote"
+# The checks above only prove the text is in the file. These use the exact
+# expressions DietPi's scripts use to read dietpi.txt, taken from its source, so
+# a value that is present but in a form DietPi would not accept still fails.
 fake_boot_partition
-cat > /tmp/eth.conf <<'EOF'
+run_prepare /tmp/bootfs /tmp/my.conf
+dietpi_read () {
+  # this is the expression used throughout /boot/dietpi/dietpi-software
+  sed -n "/^[[:blank:]]*$1=/{s/^[^=]*=//p;q}" /tmp/bootfs/dietpi.txt
+}
+assert_eq "$(dietpi_read AUTO_SETUP_CUSTOM_SCRIPT_EXEC)" "1" "DietPi reads the custom script flag as 1"
+assert_eq "$(dietpi_read AUTO_SETUP_NET_HOSTNAME)" "teslausb-model3" "DietPi reads the hostname"
+assert_eq "$(dietpi_read AUTO_SETUP_NET_WIFI_COUNTRY_CODE)" "NL" "DietPi reads the country code"
+assert_eq "$(dietpi_read AUTO_SETUP_SSH_SERVER_INDEX)" "0" "DietPi reads the SSH server index"
+
+start_case "DietPi will not stop for the interactive first run setup"
+# dietpi-login line 140 decides this with exactly this expression:
+#   grep -q '^[[:blank:]]*AUTO_SETUP_AUTOMATED=1' /boot/dietpi.txt && export G_INTERACTIVE=0
+if grep -q '^[[:blank:]]*AUTO_SETUP_AUTOMATED=1' /tmp/bootfs/dietpi.txt
+then ok "DietPi's own test for unattended setup passes, so G_INTERACTIVE=0"
+else not_ok "DietPi would run its interactive first run setup and wait for input"
+fi
+# dietpi-software uses a counting form of the same test to enable automation
+assert_eq "$(grep -cm1 '^[[:blank:]]*AUTO_SETUP_AUTOMATED=1' /tmp/bootfs/dietpi.txt)" "1" \
+  "dietpi-software sees automation enabled"
+# and it must not be left at 0 anywhere, which would win depending on order
+if [ "$(grep -c '^[[:blank:]]*AUTO_SETUP_AUTOMATED=' /tmp/bootfs/dietpi.txt)" = "1" ]
+then ok "the key appears exactly once"
+else not_ok "AUTO_SETUP_AUTOMATED appears more than once, so which wins is unclear"
+fi
+
+start_case "the login password can be set before first boot"
+fake_boot_partition
+cat > /tmp/pw.conf <<'EOF'
+export OS_PASSWORD='a-better-password'
 export ARCHIVE_SYSTEM=none
 EOF
-run_prepare /tmp/bootfs /tmp/eth.conf
-assert_no_file /tmp/bootfs/dietpi-wifi.txt "no wifi credential file"
+run_prepare /tmp/bootfs /tmp/pw.conf
+assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_GLOBAL_PASSWORD=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
+  "a-better-password" "DietPi reads the password we set"
+
+start_case "warns when the login password is left at DietPi's default"
+fake_boot_partition
+run_prepare /tmp/bootfs /tmp/my.conf
+assert_grep "still DietPi's default" /tmp/prepare.log "warned about the default password"
+
+start_case "the generated wifi file parses the way DietPi parses it"
+# dietpi-wifidb moves /boot/dietpi-wifi.txt to its database and reads these
+# arrays out of it, so source it the same way and check what DietPi would see.
+fake_boot_partition
+run_prepare /tmp/bootfs /tmp/my.conf
+(
+  declare -a aWIFI_SSID aWIFI_KEY aWIFI_KEYMGR
+  # shellcheck disable=SC1091
+  source /tmp/bootfs/dietpi-wifi.txt
+  printf '%s\n%s\n%s\n' "${aWIFI_SSID[0]}" "${aWIFI_KEY[0]}" "${aWIFI_KEYMGR[0]}"
+) > /tmp/wifi-parsed 2>/tmp/wifi-parse-err
+if [ -s /tmp/wifi-parse-err ]
+then not_ok "DietPi could not parse the file: $(cat /tmp/wifi-parse-err)"
+else ok "file parses cleanly as bash, which is how DietPi reads it"
+fi
+assert_eq "$(sed -n 1p /tmp/wifi-parsed)" "HomeNet" "DietPi would see the SSID"
+assert_eq "$(sed -n 2p /tmp/wifi-parsed)" "hunter2hunter2" "DietPi would see the passphrase"
+assert_eq "$(sed -n 3p /tmp/wifi-parsed)" "WPA-PSK" "DietPi would see the key management"
+
+start_case "a passphrase with shell metacharacters survives the round trip"
+fake_boot_partition
+cat > /tmp/meta.conf <<'PYEOF'
+export SSID='Net$With`Chars'
+export WIFIPASS='p@ss$(rm -rf /)&*|;'
+export ARCHIVE_SYSTEM=none
+PYEOF
+run_prepare /tmp/bootfs /tmp/meta.conf
+(
+  declare -a aWIFI_SSID aWIFI_KEY
+  # shellcheck disable=SC1091
+  source /tmp/bootfs/dietpi-wifi.txt
+  printf '%s\n%s\n' "${aWIFI_SSID[0]}" "${aWIFI_KEY[0]}"
+) > /tmp/wifi-meta 2>/dev/null
+# the single quotes are the point: these must stay literal
+# shellcheck disable=SC2016
+assert_eq "$(sed -n 1p /tmp/wifi-meta)" 'Net$With`Chars' "SSID preserved verbatim"
+# shellcheck disable=SC2016
+assert_eq "$(sed -n 2p /tmp/wifi-meta)" 'p@ss$(rm -rf /)&*|;' "passphrase preserved verbatim"
+
+start_case "a config with no wifi warns that the device will not come online"
+# The device lives in a car, so there is no ethernet to fall back on: a config
+# without wifi credentials means DietPi cannot finish its own first boot.
+fake_boot_partition
+cat > /tmp/nowifi.conf <<'EOF'
+export ARCHIVE_SYSTEM=none
+EOF
+run_prepare /tmp/bootfs /tmp/nowifi.conf
+assert_no_file /tmp/bootfs/dietpi-wifi.txt "no wifi credential file written"
 assert_grep "AUTO_SETUP_NET_WIFI_ENABLED=0" /tmp/bootfs/dietpi.txt "wifi left off"
-assert_grep "leaving DietPi's network settings alone" /tmp/prepare.log "said so"
+assert_grep "will have no network on first boot" /tmp/prepare.log "warned plainly"
+assert_grep "has no ethernet" /tmp/prepare.log "explained why that matters in a car"
+# still exits 0, so a desk setup over a wired connection is not blocked
+assert_eq "$PREPARE_RC" 0 "does not refuse outright"
 
 start_case "refuses to write to something that is not a DietPi boot partition"
 rm -rf /tmp/notboot

@@ -19,7 +19,11 @@
 #
 ######################################################################
 
-# Wifi setup information.
+# Wifi setup information. REQUIRED.
+#
+# The device lives in your car, so wifi is the only way it will ever reach the
+# network. DietPi also needs a working connection during its own first boot,
+# before teslausb is installed, so these must be set before you boot the card.
 #
 # These are used exactly as they were before. On DietPi they are applied through
 # DietPi's own wifi configuration rather than by writing wpa_supplicant.conf, so
@@ -37,6 +41,14 @@ export SSID='your_ssid'
 export WIFIPASS='your_pass'
 # Two letter country code for the wifi regulatory domain. Defaults to US.
 # export WIFI_COUNTRY=US
+
+# Login password for the device, used for both 'root' and the 'dietpi' user.
+#
+# Note the difference from the Raspberry Pi OS builds: DietPi has no 'pi' user,
+# so you log in as 'root' or 'dietpi' rather than 'pi'. If you leave this unset,
+# the password is whatever AUTO_SETUP_GLOBAL_PASSWORD says in dietpi.txt, which
+# defaults to 'dietpi'. Change it.
+# export OS_PASSWORD='choose-something-else'
 
 # Variables for CIFS (Windows/Mac file sharing) archiving.
 # If you want to use rsync, rclone, or NFS, delete or comment out this section

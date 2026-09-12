@@ -28,7 +28,11 @@ teslausb runs on [DietPi](https://dietpi.com/). Raspberry Pi OS is not supported
 
     If you would rather do it by hand, set `AUTO_SETUP_AUTOMATED=1` and `AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1` in `dietpi.txt`, put your wifi credentials in `dietpi-wifi.txt`, and copy `dietpi/Automation_Custom_Script.sh` and your `teslausb_setup_variables.conf` to the boot partition yourself. See `dietpi/dietpi.txt.sample` for the full list.
 
-    > **Note** DietPi brings up the network and updates itself before any teslausb code runs, which is why the wifi credentials have to be in DietPi's files as well as yours. The helper does that for you; without it, a device with no ethernet will not get online on the first boot.
+    > **Note** DietPi brings up the network and updates itself before any teslausb code runs, which is why the wifi credentials have to be in DietPi's files as well as yours. The helper does that for you. Wifi is not optional: the device lives in your car with no ethernet, so without working credentials it will never get online and DietPi cannot finish its own first boot.
+
+1.  Eject the card and boot the device. DietPi runs its own setup unattended (no prompts, because the helper sets `AUTO_SETUP_AUTOMATED=1`), then runs the teslausb bootstrap, which takes over and reboots as needed.
+
+    Log in as `root` or `dietpi`. **DietPi has no `pi` user**, so this differs from the Raspberry Pi OS builds where you logged in as `pi` with the password `raspberry`. The password is whatever you set as `OS_PASSWORD` in your config, or DietPi's default of `dietpi` if you left it unset.
 
     > **Note** When creating/editing the configuration file on Windows, ensure that it is saved with the correct extension. It is recommended to disable the "hide extensions for known file types" option in Windows so you can see the full file name.
 
