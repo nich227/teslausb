@@ -42,6 +42,49 @@ log_progress "Disabling unnecessary service..."
 systemctl disable apt-daily.timer
 systemctl disable apt-daily-upgrade.timer
 
+# DietPi-RAMlog and teslausb both want to own /var/log as a tmpfs, and DietPi's
+# version cannot survive a read-only root: dietpi-ramlog.service does
+# 'mkdir -p /var/lib/dietpi/logs' on start and writes the preserved log metadata
+# back there on stop, both of which are writes to the root filesystem. Its fstab
+# entry would also win over the one added below, because that is only added when
+# no /var/log entry exists.
+#
+# So remove it through dietpi-software, which keeps DietPi's own install state
+# consistent, and clean up the mount and fstab entry if anything is left. This
+# lives here rather than only in the DietPi bootstrap script so that installs
+# started by hand are covered too.
+function remove_dietpi_ramlog () {
+  if ! grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab 2> /dev/null &&
+     ! findmnt -t tmpfs /var/log > /dev/null 2>&1
+  then
+    log_progress "DietPi-RAMlog is not in use"
+    return 0
+  fi
+
+  log_progress "Removing DietPi-RAMlog so teslausb can own /var/log"
+  if [ -x /boot/dietpi/dietpi-software ]
+  then
+    /boot/dietpi/dietpi-software uninstall 103 || \
+      log_progress "WARNING: dietpi-software uninstall 103 failed"
+  fi
+
+  systemctl disable dietpi-ramlog &> /dev/null || true
+  systemctl stop dietpi-ramlog &> /dev/null || true
+
+  if grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab 2> /dev/null
+  then
+    log_progress "dropping DietPi's /var/log entry from /etc/fstab"
+    sed -i '/[[:blank:]]\/var\/log[[:blank:]]/d' /etc/fstab
+  fi
+  if findmnt -t tmpfs /var/log > /dev/null 2>&1
+  then
+    umount -Rfl /var/log || log_progress "WARNING: could not unmount the /var/log tmpfs"
+  fi
+  mkdir -p /var/log
+}
+
+remove_dietpi_ramlog
+
 # adb service exists on some distributions and interferes with mass storage emulation
 systemctl disable amlogic-adbd &> /dev/null || true
 systemctl disable radxa-adbd radxa-usbnet &> /dev/null || true
@@ -50,11 +93,19 @@ systemctl disable radxa-adbd radxa-usbnet &> /dev/null || true
 systemctl disable armbian-led-state &> /dev/null || true
 
 log_progress "Removing unwanted packages..."
-apt-get remove -y --force-yes --purge triggerhappy logrotate dphys-swapfile
-apt-get -y --force-yes autoremove --purge
+# Logrotate and Rsyslog are DietPi software items (101 and 102); remove them the
+# DietPi way so its install state does not drift, then let apt clean up whatever
+# was not installed through DietPi.
+if [ -x /boot/dietpi/dietpi-software ]
+then
+  /boot/dietpi/dietpi-software uninstall 101 102 &> /dev/null || \
+    log_progress "WARNING: could not uninstall Logrotate/Rsyslog via dietpi-software"
+fi
+apt-get remove -y --purge triggerhappy logrotate dphys-swapfile
+apt-get -y autoremove --purge
 # Replace log management with busybox (use logread if needed)
 log_progress "Installing ntp and busybox-syslogd..."
-apt-get -y --force-yes install ntp busybox-syslogd; dpkg --purge rsyslog
+apt-get -y install ntp busybox-syslogd; dpkg --purge rsyslog
 
 log_progress "Configuring system..."
 

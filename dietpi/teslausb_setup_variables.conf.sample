@@ -7,14 +7,36 @@
 # SD card.
 # The latest version of this file is at: https://bit.ly/teslausbconfig
 #
+# teslausb runs on DietPi. Everything here is still configured before the first
+# boot, by editing this file on the boot partition of the freshly flashed card.
+# The easiest way to set it all up is:
+#
+#   sudo tools/prepare-boot-partition.sh /path/to/boot/partition this-file
+#
+# which copies this file across and also fills in DietPi's own pre-boot settings
+# (unattended first boot, hostname, and the wifi credentials below) so the device
+# comes up on the network by itself.
+#
 ######################################################################
 
 # Wifi setup information.
+#
+# These are used exactly as they were before. On DietPi they are applied through
+# DietPi's own wifi configuration rather than by writing wpa_supplicant.conf, so
+# DietPi and teslausb do not fight over the adapter.
+#
+# If you flash the card and boot it without running prepare-boot-partition.sh,
+# DietPi's own first boot happens before teslausb exists, so a device with no
+# ethernet needs these credentials in DietPi's files too. That is exactly what
+# prepare-boot-partition.sh does for you.
+#
 # You do not need to set these variables if networking is already configured
 # and you ran the "install.sh" script.
 # Note that some devices, like Raspberry Pi Zero W, only support 2.4 GHz wifi.
 export SSID='your_ssid'
 export WIFIPASS='your_pass'
+# Two letter country code for the wifi regulatory domain. Defaults to US.
+# export WIFI_COUNTRY=US
 
 # Variables for CIFS (Windows/Mac file sharing) archiving.
 # If you want to use rsync, rclone, or NFS, delete or comment out this section

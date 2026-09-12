@@ -23,6 +23,23 @@ then
   exit 1
 fi
 
+# The access point is built on NetworkManager. DietPi manages the network with
+# ifupdown and wpa_supplicant by default, so NetworkManager has to be in charge
+# before this can work; running both leaves the wifi client connection broken.
+# Rather than switching the network stack out from under a working install, stop
+# here and say what to do.
+if ! systemctl -q is-enabled NetworkManager.service 2> /dev/null
+then
+  log_progress "STOP: AP_SSID is set, but NetworkManager is not managing the network."
+  log_progress "The teslausb access point needs NetworkManager, while DietPi defaults to"
+  log_progress "ifupdown plus wpa_supplicant. Either hand networking over to"
+  log_progress "NetworkManager first ('apt install network-manager', move your wifi"
+  log_progress "settings across, reboot), or remove AP_SSID from"
+  log_progress "teslausb_setup_variables.conf and configure wifi with dietpi-config"
+  log_progress "(Network Options: Adapters) instead."
+  exit 1
+fi
+
 function nm_get_wifi_client_device () {
   for _ in {1..5}
   do
@@ -85,132 +102,23 @@ EOF
 }
 
 
-if systemctl --quiet is-enabled NetworkManager.service
+# force-install iw because otherwise it will get autoremoved when
+# alsa-utils is removed later
+apt-get -y install iw || exit 1
+
+if ! nm_add_ap
 then
-  # force-install iw because otherwise it will get autoremoved when
-  # alsa-utils is removed later
-  apt-get -y --force-yes install iw || return 1
+  # Network Manager won't allow adding connections when started with a
+  # read-only root fs, even if the root fs is not writeable, so try
+  # again after restarting Network Manager
+  log_progress "Retrying after restarting Network Manager"
+  systemctl restart NetworkManager.service
   if ! nm_add_ap
   then
-    # Network Manager won't allow adding connections when started with a
-    # read-only root fs, even if the root fs is not writeable, so try
-    # again after restarting Network Manager
-    log_progress "Retrying after restarting Network Manager"
-    systemctl restart NetworkManager.service
-    if ! nm_add_ap
-    then
-      log_progress "STOP: Failed to configure AP"
-      exit 1
-    fi
+    log_progress "STOP: Failed to configure AP"
+    exit 1
   fi
-  log_progress "AP configured"
-  exit 0
 fi
 
-
-if [ ! -e /etc/wpa_supplicant/wpa_supplicant.conf ]
-then
-  log_progress "No wpa_supplicant, skipping AP setup."
-  exit 0
-fi
-
-if ! grep -q id_str /etc/wpa_supplicant/wpa_supplicant.conf
-then
-  IP=${AP_IP:-"192.168.66.1"}
-  NET=$(echo -n "$IP" | sed -e 's/\.[0-9]\{1,3\}$//')
-
-  # install required packages
-  log_progress "installing dnsmasq and hostapd"
-  apt-get -y --force-yes install dnsmasq hostapd
-
-  log_progress "configuring AP '$AP_SSID' with IP $IP"
-  # create udev rule
-  MAC="$(cat /sys/class/net/wlan0/address)"
-  cat <<- EOF > /etc/udev/rules.d/70-persistent-net.rules
-	SUBSYSTEM=="ieee80211", ACTION=="add|change", ATTR{macaddress}=="$MAC", KERNEL=="phy0", \
-	RUN+="/sbin/iw phy phy0 interface add ap0 type __ap", \
-	RUN+="/bin/ip link set ap0 address $MAC"
-	EOF
-
-  # configure dnsmasq
-  cat <<- EOF > /etc/dnsmasq.conf
-	interface=lo,ap0
-	no-dhcp-interface=lo,wlan0
-	bind-interfaces
-	bogus-priv
-	dhcp-range=${NET}.10,${NET}.254,12h
-	# don't configure a default route, we're not a router
-	dhcp-option=3
-	EOF
-
-  # configure hostapd
-  cat <<- EOF > /etc/hostapd/hostapd.conf
-	ctrl_interface=/var/run/hostapd
-	ctrl_interface_group=0
-	interface=ap0
-	driver=nl80211
-	ssid=${AP_SSID}
-	hw_mode=g
-	channel=11
-	wmm_enabled=0
-	macaddr_acl=0
-	auth_algs=1
-	wpa=2
-	wpa_passphrase=${AP_PASS}
-	wpa_key_mgmt=WPA-PSK
-	wpa_pairwise=TKIP CCMP
-	rsn_pairwise=CCMP
-	EOF
-  cat <<- EOF > /etc/default/hostapd
-	DAEMON_CONF="/etc/hostapd/hostapd.conf"
-	EOF
-
-  # define network interfaces. Note use of 'AP1' name, defined in wpa_supplication.conf below
-  cat <<- EOF > /etc/network/interfaces
-	source-directory /etc/network/interfaces.d
-
-	auto lo
-	auto ap0
-	auto wlan0
-	iface lo inet loopback
-
-	allow-hotplug ap0
-	iface ap0 inet static
-	    address ${IP}
-	    netmask 255.255.255.0
-	    hostapd /etc/hostapd/hostapd.conf
-
-	allow-hotplug wlan0
-	iface wlan0 inet manual
-	    wpa-roam /etc/wpa_supplicant/wpa_supplicant.conf
-	iface AP1 inet dhcp
-	EOF
-
-  # For bullseye it is apparently necessary to explicitly disable wpa_supplicant for the ap0 interface
-  cat <<- EOF >> /etc/dhcpcd.conf
-	# disable wpa_supplicant for the ap0 interface
-	interface ap0
-	nohook wpa_supplicant
-	EOF
-
-  if [ ! -L /var/lib/misc ]
-  then
-    if ! findmnt --mountpoint /mutable
-    then
-        mount /mutable
-    fi
-    mkdir -p /mutable/varlib
-    mv /var/lib/misc /mutable/varlib
-    ln -s /mutable/varlib/misc /var/lib/misc
-  fi
-
-  # update the host name to have the AP IP address, otherwise
-  # clients connected to the IP will get 127.0.0.1 when looking
-  # up the teslausb host name
-  sed -i -e "/^127.0.0.1\s*localhost/b; s/^127.0.0.1\(\s*.*\)/$IP\1/" /etc/hosts
-
-  # add ID string to wpa_supplicant
-  sed -i -e 's/}/  id_str="AP1"\n}/'  /etc/wpa_supplicant/wpa_supplicant.conf
-else
-  log_progress "AP mode already configured"
-fi
+log_progress "AP configured"
+exit 0

@@ -1,0 +1,60 @@
+# DietPi settings for a teslausb install.
+#
+# These are the entries that matter for teslausb. Do NOT copy this file over the
+# dietpi.txt on your boot partition: DietPi's own dietpi.txt has many more
+# settings, and replacing it wholesale will break first boot. Edit the dietpi.txt
+# that came with the image and change these values in place.
+#
+# See doc/OneStepSetup.md for the whole procedure.
+
+# ---------------------------------------------------------------------------
+# Required
+# ---------------------------------------------------------------------------
+
+# Run DietPi's first boot unattended, without the interactive setup menus.
+AUTO_SETUP_AUTOMATED=1
+
+# Run Automation_Custom_Script.sh, which is what installs teslausb. Copy
+# dietpi/Automation_Custom_Script.sh from this repo to the boot partition
+# alongside dietpi.txt.
+AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1
+
+# teslausb needs SSH to be reachable for anything other than a fully automatic
+# install. 0 is Dropbear, which is fine; -1 disables SSH entirely, which is not.
+AUTO_SETUP_SSH_SERVER_INDEX=0
+
+# Change this. It is the root and dietpi user password.
+AUTO_SETUP_GLOBAL_PASSWORD=dietpi
+
+# ---------------------------------------------------------------------------
+# Networking - DietPi owns this, teslausb does not touch it
+# ---------------------------------------------------------------------------
+
+# For a wifi install, enable wifi here and put the credentials in
+# dietpi-wifi.txt on the same partition. teslausb no longer writes
+# wpa_supplicant.conf itself, because doing so fights DietPi for control of the
+# adapter and can leave the device with no network at all.
+AUTO_SETUP_NET_WIFI_ENABLED=1
+AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US
+
+# The name teslausb will be reachable under.
+AUTO_SETUP_NET_HOSTNAME=teslausb
+
+# ---------------------------------------------------------------------------
+# Recommended
+# ---------------------------------------------------------------------------
+
+AUTO_SETUP_LOCALE=en_US.UTF-8
+AUTO_SETUP_KEYBOARD_LAYOUT=us
+AUTO_SETUP_TIMEZONE=America/Los_Angeles
+
+# ---------------------------------------------------------------------------
+# Note on logging
+# ---------------------------------------------------------------------------
+#
+# DietPi installs DietPi-RAMlog by default, and teslausb removes it during
+# setup. Both want to own /var/log as a tmpfs, and DietPi's version writes to the
+# root filesystem when it stops, which does not work once teslausb has made the
+# root read-only. There is no dietpi.txt setting for this, so it is handled by
+# the teslausb setup scripts. If you would rather do it yourself beforehand, run
+# 'dietpi-software uninstall 103'.

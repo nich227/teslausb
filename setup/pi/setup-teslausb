@@ -6,9 +6,17 @@ then
   exit 1
 fi
 
-if [ "$(. /etc/os-release && echo "${VERSION_ID:-}")" = "9" ]
+# teslausb targets DietPi, and only DietPi. Raspberry Pi OS is not supported:
+# the first-boot driver is a systemd unit rather than /etc/rc.local, networking
+# is left to DietPi, and the packages Raspberry Pi OS ships by default are
+# installed explicitly because DietPi ships almost none of them.
+if [ ! -f /boot/dietpi/.version ]
 then
-  echo "STOP: Stretch-based install is no longer supported. Please flash the latest prebuilt."
+  echo "STOP: this is not DietPi."
+  echo
+  echo "teslausb requires DietPi. Flash a DietPi image for your board from"
+  echo "https://dietpi.com/#download and run setup again. Raspberry Pi OS and"
+  echo "other Debian derivatives are no longer supported."
   exit 1
 fi
 
@@ -109,7 +117,7 @@ then
   # source the conf file directly to get REPO, BRANCH or download_sources
   # in case they're set
   safesource /root/teslausb_setup_variables.conf
-  REPO=${REPO:-marcone}
+  REPO=${REPO:-nich227}
   BRANCH=${BRANCH:-main-dev}
   copy_script setup/pi/envsetup.sh "$THISDIR"
 fi
@@ -122,16 +130,6 @@ function dehumanize () {
 }
 
 REBOOT=false
-
-# wpa_supplicant should have a country code. Use US as the default
-# to avoid using the disallowed channels in the US.
-WPA=/etc/wpa_supplicant/wpa_supplicant.conf
-if [ -e "$WPA" ] && ! grep -q "country=" $WPA && grep -q "network=" $WPA
-then
-  setup_progress "adding country code to wpa_supplicant.conf"
-  echo "country=US" >> $WPA
-  REBOOT=true
-fi
 
 BOOT_DISK=$(lsblk -dpno pkname "$(findmnt -D -no SOURCE --target /teslausb)")
 declare -rx BOOT_DISK
@@ -421,17 +419,149 @@ function update_package_index () {
   # the package index might be in a bad state if setup was previously
   # interrupted, so fix it up first
   dpkg --configure -a || true
-  if [ "$(. /etc/os-release && echo "${VERSION_ID:-}")" = "10" ] && grep -q 'raspbian\.raspberrypi\.org' /etc/apt/sources.list
-  then
-    echo "Updating apt sources for legacy Buster (consider using a more recent image)"
-    sed -i 's|raspbian.raspberrypi.org|legacy.raspbian.org|g' /etc/apt/sources.list
-  fi
 
   while ! (apt-get update || apt-get update --allow-releaseinfo-change)
   do
     setup_progress "Failed, retrying"
     sleep 2
   done
+}
+
+# Packages teslausb needs that DietPi does not ship. On Raspberry Pi OS most of
+# these came either with the distro or baked into the prebuilt image; DietPi is
+# stripped to the bare essentials, so setup installs them itself. Keeping this
+# in one list means a missing tool fails here with a clear message rather than
+# halfway through setup.
+readonly TESLAUSB_PACKAGES=(
+  # filesystems for the backing files and the boot partition
+  xfsprogs
+  exfatprogs
+  dosfstools
+  # archive and setup plumbing
+  rsync
+  dos2unix
+  hping3
+  libxxhash0
+  autofs
+  sntp
+  # the web interface
+  nginx
+  fcgiwrap
+  libnginx-mod-http-fancyindex
+  # notification scripts and tesla_api
+  python3-pip
+  # building the CTTS eraser
+  libfuse-dev
+)
+
+# The teslausb access point is configured through NetworkManager. Raspberry Pi
+# OS ships and enables it; DietPi manages the network with ifupdown instead. To
+# keep AP_SSID working the same way on DietPi, hand networking over to
+# NetworkManager once, carrying the wifi credentials across so the device does
+# not lose its connection, then reboot into it.
+function ensure_networkmanager_for_ap () {
+  if systemctl -q is-enabled NetworkManager.service 2> /dev/null
+  then
+    setup_progress "NetworkManager is already managing the network"
+    return 0
+  fi
+
+  if [ -e /root/TESLAUSB_NM_HANDOVER_DONE ]
+  then
+    setup_progress "WARNING: NetworkManager handover already attempted but it is not enabled."
+    setup_progress "WARNING: skipping access point setup. Configure NetworkManager by hand,"
+    setup_progress "WARNING: or remove AP_SSID from the config."
+    return 1
+  fi
+
+  setup_progress "Installing NetworkManager so the access point can be configured"
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -y install network-manager
+  then
+    setup_progress "STOP: could not install network-manager"
+    return 1
+  fi
+
+  # Carry the wifi credentials over, otherwise the device comes back up with
+  # NetworkManager in charge and no network to connect to. Prefer the values from
+  # the config, and fall back to whatever DietPi already has configured.
+  local ap_ssid="${SSID:-}"
+  local ap_pass="${WIFIPASS:-}"
+  if [ -z "$ap_ssid" ] && [ -e /etc/wpa_supplicant/wpa_supplicant.conf ]
+  then
+    ap_ssid=$(sed -n 's/^[[:blank:]]*ssid="\(.*\)"/\1/p' /etc/wpa_supplicant/wpa_supplicant.conf | head -1)
+    ap_pass=$(sed -n 's/^[[:blank:]]*psk="\(.*\)"/\1/p' /etc/wpa_supplicant/wpa_supplicant.conf | head -1)
+  fi
+
+  if [ -n "$ap_ssid" ]
+  then
+    setup_progress "Handing the '$ap_ssid' connection to NetworkManager"
+    mkdir -p /etc/NetworkManager/system-connections
+    cat > "/etc/NetworkManager/system-connections/${ap_ssid}.nmconnection" <<EOF
+[connection]
+id=${ap_ssid}
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=${ap_ssid}
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=${ap_pass}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+    chmod 600 "/etc/NetworkManager/system-connections/${ap_ssid}.nmconnection"
+  else
+    setup_progress "WARNING: no wifi credentials found to hand over; if this device is"
+    setup_progress "WARNING: on wifi it may come back up without a connection."
+  fi
+
+  # Stop DietPi's ifupdown from also driving the adapter.
+  if [ -e /etc/network/interfaces ]
+  then
+    cp /etc/network/interfaces /etc/network/interfaces.teslausb-backup
+    # comment out the wireless stanzas, leaving ethernet alone
+    sed -i '/^[[:blank:]]*\(auto\|allow-hotplug\|iface\)[[:blank:]]\+wlan/s/^/#teslausb# /' \
+      /etc/network/interfaces
+  fi
+
+  systemctl enable NetworkManager.service
+  touch /root/TESLAUSB_NM_HANDOVER_DONE
+
+  setup_progress "Rebooting so NetworkManager takes over before the access point is set up"
+  reboot
+  exit 0
+}
+
+function install_base_packages () {
+  local -a missing=()
+  local pkg
+  for pkg in "${TESLAUSB_PACKAGES[@]}"
+  do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2> /dev/null | grep -q "install ok installed"
+    then
+      missing+=("$pkg")
+    fi
+  done
+
+  if [ ${#missing[@]} -eq 0 ]
+  then
+    setup_progress "all required packages are already installed"
+    return 0
+  fi
+
+  setup_progress "Installing packages DietPi does not ship: ${missing[*]}"
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -y install "${missing[@]}"
+  then
+    setup_progress "STOP: failed to install required packages: ${missing[*]}"
+    return 1
+  fi
 }
 
 function upgrade_packages () {
@@ -719,7 +849,7 @@ function diagnose {
       echo "WARNING: /mutable is low on inodes: ${inodes}% used"
     fi
 
-    if [[ "$BRANCH" != "main-dev" || "$REPO" != "marcone" ]]
+    if [[ "$BRANCH" != "main-dev" || "$REPO" != "nich227" ]]
     then
       echo "WARNING: using $REPO/$BRANCH"
     fi
@@ -807,8 +937,8 @@ function diagnose {
     umount /tmp/root$$
     rmdir /tmp/root$$
 
-    echo -e "====== rc.local log ======"
-    journalctl -u rc-local
+    echo -e "====== setup driver log ======"
+    journalctl -u teslausb-setup
 
     echo -e "====== setup log ======"
     if [ -e /teslausb/teslausb-headless-setup.log ]
@@ -915,24 +1045,33 @@ else
   setup_progress "WARNING: $BRANCHNAME contains a different version of $0. It is recommended to run '$0 upgrade' to get the latest version."
 fi
 
-copy_script pi-gen-sources/00-teslausb-tweaks/files/rc.local "$tmpdir" &> /dev/null
-if cmp -s "$tmpdir/rc.local" /etc/rc.local
+copy_script setup/pi/teslausb-setup.service "$tmpdir" &> /dev/null
+copy_script setup/pi/first-boot.sh "$tmpdir" &> /dev/null
+if cmp -s "$tmpdir/first-boot.sh" /root/bin/first-boot.sh &&
+   cmp -s "$tmpdir/teslausb-setup.service" /lib/systemd/system/teslausb-setup.service
 then
-  setup_progress "rc.local is up to date"
+  setup_progress "first boot driver is up to date"
 else
-  setup_progress "updating rc.local"
-  mv "$tmpdir/rc.local" /etc/rc.local
+  setup_progress "updating the first boot driver"
+  mkdir -p /root/bin
+  mv "$tmpdir/first-boot.sh" /root/bin/first-boot.sh
+  chmod +x /root/bin/first-boot.sh
+  mv "$tmpdir/teslausb-setup.service" /lib/systemd/system/teslausb-setup.service
+  systemctl daemon-reload
+  systemctl enable teslausb-setup.service
   parent=$(ps -o ppid= $PPID)
   grandparent=$(ps -o ppid= "$((parent))" )
   caller=$(ps -o comm= "$((grandparent))")
-  if [ "$caller" = "rc.local" ] && [ ! -t 0 ]
+  if [ "$caller" = "first-boot.sh" ] && [ ! -t 0 ]
   then
-    setup_progress "rebooting to run updated rc.local"
+    setup_progress "rebooting to run the updated first boot driver"
     exec reboot
   fi
 fi
 
 update_package_index
+
+install_base_packages
 
 # set time zone so we get decent timestamps in the rest of the setup log
 set_timezone
@@ -980,6 +1119,11 @@ fi
 
 if [ -n "${AP_SSID:+x}" ]
 then
+  # The access point is built with NetworkManager, which Raspberry Pi OS had by
+  # default and DietPi does not. Provision it here so AP_SSID keeps working
+  # exactly as it did, rather than making the user set up the network stack by
+  # hand.
+  ensure_networkmanager_for_ap
   copy_script setup/pi/configure-ap.sh /tmp
   /tmp/configure-ap.sh
 fi

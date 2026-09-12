@@ -1,12 +1,24 @@
 #!/bin/bash -eu
 #
-# Pre-install script to make things look sufficiently like what
-# the main Raspberry Pi centric install scripts expect.
+# Pre-install script for installing teslausb onto an already running DietPi
+# system, rather than letting DietPi's Automation_Custom_Script do it on first
+# boot. It resizes the root filesystem to make room for the backing files and
+# then hands over to the normal teslausb setup.
 #
 
 if [[ $EUID -ne 0 ]]
 then
   echo "STOP: Run sudo -i."
+  exit 1
+fi
+
+if [ ! -f /boot/dietpi/.version ]
+then
+  echo "STOP: this is not DietPi."
+  echo
+  echo "teslausb requires DietPi. Flash a DietPi image for your board from"
+  echo "https://dietpi.com/#download. Raspberry Pi OS and other Debian"
+  echo "derivatives are no longer supported."
   exit 1
 fi
 
@@ -85,25 +97,32 @@ then
 
     echo "insufficient unpartitioned space, attempting to shrink root file system"
 
-    cat <<- EOF > /etc/rc.local
-		#!/bin/bash
-		{
-		  while ! curl -s https://raw.githubusercontent.com/marcone/teslausb/main-dev/setup/generic/install.sh
-		  do
-		    sleep 1
-		  done
-		} | bash
+    # Resume this script after the reboot the resize needs. DietPi has no
+    # rc.local, so use a one-shot unit that removes itself once it has run.
+    cat <<- EOF > /etc/systemd/system/teslausb-resize-resume.service
+		[Unit]
+		Description=Resume teslausb root filesystem resize
+		After=network-online.target
+		Wants=network-online.target
+
+		[Service]
+		Type=oneshot
+		ExecStart=/bin/bash -c 'systemctl disable teslausb-resize-resume.service; rm -f /etc/systemd/system/teslausb-resize-resume.service; { while ! curl -s https://raw.githubusercontent.com/${REPO:-nich227}/teslausb/${BRANCH:-main-dev}/setup/generic/install.sh; do sleep 1; done; } | bash'
+		StandardOutput=journal+console
+
+		[Install]
+		WantedBy=multi-user.target
 		EOF
-    chmod a+x /etc/rc.local
+    systemctl daemon-reload
+    systemctl enable teslausb-resize-resume.service
 
     if [ ! -e "/boot/initrd.img-$(uname -r)" ]
     then
-      # This device did not boot using an initramfs. If we're running
-      # Raspberry Pi OS, we can switch it over to using initramfs first,
-      # then revert back after.
-      if [ -f /etc/os-release ] && grep -q Raspbian /etc/os-release && [ -e /teslausb/config.txt ]
+      # This device did not boot using an initramfs. On a Raspberry Pi under
+      # DietPi we can switch it over to using one first, then revert after.
+      if [ -e /teslausb/config.txt ]
       then
-        echo "Temporarily switching Rasspberry Pi OS to use initramfs"
+        echo "Temporarily switching to an initramfs for the resize"
         update-initramfs -c -k "$(uname -r)"
         echo "initramfs initrd.img-$(uname -r) followkernel # TESLAUSB-REMOVE" >> /teslausb/config.txt
       else
@@ -130,7 +149,7 @@ then
 
   if [ -e /teslausb/config.txt ] && grep -q TESLAUSB-REMOVE /teslausb/config.txt
   then
-    # switch Raspberry Pi OS back to not using initramfs
+    # switch back to not using an initramfs
     sed -i '/TESLAUSB-REMOVE/d' /teslausb/config.txt
     rm -rf "/boot/initrd.img-$(uname -r)"
   else
@@ -145,33 +164,29 @@ fi
 # Copy the sample config file from github
 if [ ! -e /teslausb/teslausb_setup_variables.conf ] && [ ! -e /root/teslausb_setup_variables.conf ]
 then
-  while ! curl -o /teslausb/teslausb_setup_variables.conf https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/teslausb_setup_variables.conf.sample
+  while ! curl -o /teslausb/teslausb_setup_variables.conf "https://raw.githubusercontent.com/${REPO:-nich227}/teslausb/${BRANCH:-main-dev}/dietpi/teslausb_setup_variables.conf.sample"
   do
     sleep 1
   done
 fi
 
-# and the wifi config template
-if [ ! -e /teslausb/wpa_supplicant.conf.sample ]
-then
-  while ! curl -o /teslausb/wpa_supplicant.conf.sample https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/wpa_supplicant.conf.sample
-  do
-    sleep 1
-  done
-fi
+# Networking is DietPi's job: configure wifi with dietpi-config (Network
+# Options: Adapters) or dietpi-wifi.txt before running this.
 
-# The user should have configured networking manually, so disable wifi setup
-touch /teslausb/WIFI_ENABLED
-
-# Copy our rc.local from github, which will allow setup to
-# continue using the regular "one step setup" process used
-# for setting up a Raspberry Pi with the prebuilt image
-rm -f /etc/rc.local
-while ! curl -o /etc/rc.local https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/rc.local
+# Install the setup driver and its unit, which carry setup across the reboots it
+# needs. This replaces the rc.local hook used on Raspberry Pi OS.
+mkdir -p /root/bin
+while ! curl -o /root/bin/first-boot.sh "https://raw.githubusercontent.com/${REPO:-nich227}/teslausb/${BRANCH:-main-dev}/setup/pi/first-boot.sh"
 do
   sleep 1
 done
-chmod a+x /etc/rc.local
+chmod a+x /root/bin/first-boot.sh
+while ! curl -o /lib/systemd/system/teslausb-setup.service "https://raw.githubusercontent.com/${REPO:-nich227}/teslausb/${BRANCH:-main-dev}/setup/pi/teslausb-setup.service"
+do
+  sleep 1
+done
+systemctl daemon-reload
+systemctl enable teslausb-setup.service
 
 if [ ! -x "$(command -v dos2unix)" ]
 then
@@ -231,11 +246,11 @@ then
 	  echo "| /teslausb/teslausb_setup_variables.conf with your favorite             |"
 	  echo "| editor, e.g. 'nano /teslausb/teslausb_setup_variables.conf' and fill   |"
 	  echo "| in the required variables. Instructions are in the file, and at        |"
-	  echo "| https://github.com/marcone/teslausb/blob/main-dev/doc/OneStepSetup.md  |"
-	  echo "| (though ignore the Raspberry Pi specific bits about flashing and       |"
-	  echo "| mounting the sd card on a PC)                                          |"
+	  echo "| https://github.com/nich227/teslausb/blob/main-dev/doc/OneStepSetup.md  |"
+	  echo "| (ignore the parts about flashing a DietPi image and editing files on   |"
+	  echo "| the boot partition from a PC)                                          |"
 	  echo "|                                                                        |"
-	  echo "| When done, save changes and run /etc/rc.local                          |"
+	  echo "| When done, save changes and run /root/bin/first-boot.sh                 |"
 	  echo "+------------------------------------------------------------------------+"
 	fi
 	EOF

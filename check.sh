@@ -8,7 +8,8 @@ shellcheck -V
 # SC1091 - Don't complain about not being able to find files that don't exist.
 shellcheck --exclude=SC1091 \
            ./setup/pi/setup-teslausb \
-           ./pi-gen-sources/00-teslausb-tweaks/files/rc.local \
+           ./setup/pi/first-boot.sh \
+           ./dietpi/Automation_Custom_Script.sh \
            ./run/archiveloop \
            ./run/auto.teslausb \
            ./run/awake_start \
