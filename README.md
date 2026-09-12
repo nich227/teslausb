@@ -22,12 +22,13 @@ If you are interested in having more detailed information about how TeslaUsb wor
 
 - You park in range of your wireless network.
 - Your wireless network is configured with WPA2 PSK access.
+- You are running [DietPi](https://dietpi.com/) on the device. DietPi is the only supported OS; Raspberry Pi OS is not supported.
 
 ### Hardware
 
 Required:
 
-- [A Raspberry Pi or other SBC that supports USB OTG](https://github.com/marcone/teslausb/wiki/Hardware).
+- [A Raspberry Pi or other SBC that supports USB OTG](https://github.com/marcone/teslausb/wiki/Hardware), with a [DietPi image](https://dietpi.com/#download) available for it.
 - A Micro SD card, at least 64 GB in size, and an adapter (if necessary) to connect the card to your computer.
 - Cable(s) to connect the SBC to the Tesla (USB A/Micro B cable for the Pi Zero, USB A/C cable for the Pi 4 and 5, other SBCs vary)
 

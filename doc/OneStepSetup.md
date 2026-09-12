@@ -1,6 +1,8 @@
 # One-step setup
 
-This is a streamlined process for setting up the Pi. You'll flash a preconfigured version of Raspbian Buster Lite and then fill out a config file.
+This is a streamlined process for setting up the device. You'll flash an official DietPi image, fill out a config file, and let the device configure itself on first boot.
+
+teslausb runs on [DietPi](https://dietpi.com/). Raspberry Pi OS is not supported.
 
 ## Notes
 
@@ -10,13 +12,23 @@ This is a streamlined process for setting up the Pi. You'll flash a preconfigure
 
 ## Configure the SD card before first boot of the Pi
 
-1.  Flash the [latest image release](https://github.com/marcone/teslausb/releases/latest) using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or a similar flashing tool.
+1.  Download the DietPi image for your board from [dietpi.com/#download](https://dietpi.com/#download) and flash it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/), balenaEtcher, or a similar tool.
 
-    In Raspberry Pi Imager, you need to click 'Operating System' and then scroll _all the way down_ and select the 'Use custom' option.
+    Do not use Raspberry Pi Imager's customisation options (hostname, wifi, SSH). DietPi has its own settings for those and teslausb fills them in for you in the next step.
 
-1.  Mount the card again, and in the `boot` directory create a `teslausb_setup_variables.conf` file to export the same environment variables normally needed for manual setup (including archive info, Wifi, and push notifications (if desired).
-    A sample conf file is located in the `boot` folder on the SD card. The latest sample is also available [from GitHub](https://github.com/marcone/teslausb/blob/main-dev/pi-gen-sources/00-teslausb-tweaks/files/teslausb_setup_variables.conf.sample).
-    The sample file contains documentation and suggestions for values.
+1.  Mount the card again and create a `teslausb_setup_variables.conf` file with the environment variables you want (archive info, wifi, push notifications if desired).
+    A sample conf file with documentation and suggested values is [in the repo](https://github.com/nich227/teslausb/blob/main-dev/dietpi/teslausb_setup_variables.conf.sample).
+
+1.  Point the repo's helper at the boot partition. This is what makes the rest of the setup unattended: it copies your config and the teslausb bootstrap onto the card, and fills in DietPi's own pre-boot settings (unattended first boot, hostname, and your wifi credentials) so the device comes up on the network by itself.
+
+    ```
+    git clone https://github.com/nich227/teslausb
+    sudo teslausb/tools/prepare-boot-partition.sh /path/to/boot/partition /path/to/teslausb_setup_variables.conf
+    ```
+
+    If you would rather do it by hand, set `AUTO_SETUP_AUTOMATED=1` and `AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1` in `dietpi.txt`, put your wifi credentials in `dietpi-wifi.txt`, and copy `dietpi/Automation_Custom_Script.sh` and your `teslausb_setup_variables.conf` to the boot partition yourself. See `dietpi/dietpi.txt.sample` for the full list.
+
+    > **Note** DietPi brings up the network and updates itself before any teslausb code runs, which is why the wifi credentials have to be in DietPi's files as well as yours. The helper does that for you; without it, a device with no ethernet will not get online on the first boot.
 
     > **Note** When creating/editing the configuration file on Windows, ensure that it is saved with the correct extension. It is recommended to disable the "hide extensions for known file types" option in Windows so you can see the full file name.
 
@@ -97,12 +109,11 @@ Given that the Pi contains sensitive information like your home wifi password an
 
 - If everything seems to be working, but you still don't see the USB drive(s) either on your local machine, or in the car, check that you are indeed using a USB data cable, and not a charge-only cable. Also ensure you are plugged into the USB port on the Raspberry PI, and not the power port.
 - `ssh` to `pi@teslausb.local` (assuming Wifi came up, or your Pi is connected to your computer via USB) and look at the `/teslausb/teslausb-headless-setup.log`.
-- Try `sudo -i` and then run `/etc/rc.local`. The scripts are fairly resilient to restarting and not re-running previous steps, and will tell you about progress/failure.
+- Try `sudo -i` and then run `/root/bin/first-boot.sh`. The scripts are fairly resilient to restarting and not re-running previous steps, and will tell you about progress/failure. `journalctl -u teslausb-setup` shows what happened on the previous boots.
 - If Wifi didn't come up:
   - Double-check the SSID and WIFIPASS variables in `teslausb_setup_variables.conf`, and remove `WIFI_ENABLED`, then boot the SD in your Pi to retry automatic Wifi setup.
-  - If you are using a WiFi network with a _hidden SSID_, edit `/boot/wpa_supplicant.conf.sample` and uncomment the line `scan_ssid=1` in the `network={...}` block.
-  - If still no go, re-run `/etc/rc.local`
-  - If all else fails, copy `/boot/wpa_supplicant.conf.sample` to `/boot/wpa_supplicant.conf` and edit out the `TEMP` variables to your desired settings.
+  - Networking is DietPi's job. Check it with `dietpi-config` (Network Options: Adapters), and check `/boot/dietpi-wifi.txt` holds the right credentials.
+  - If still no go, re-run `/root/bin/first-boot.sh`
 - Note: if you get an error about `read-only filesystem`, you may have to `sudo -i` and run `/root/bin/remountfs_rw`.
 - Try `date` to ensure the system clock is set correctly. If it is too far off, SSL/TLS Authentication will fail, preventing the installation from completing. You can set the date like `date -s "2 JAN 2022 15:04:05"`
 - Try `tail -f /teslausb/teslausb-headless-setup.log` to watch the logs during installation, which may shed some light on any errors occurring. Press `Ctrl-C` to stop watching logs.
@@ -117,7 +128,7 @@ When the Pi boots the first time:
 
 - A `/teslausb/teslausb-headless-setup.log` file will be created and stages logged.
 - Marker files will be created in `teslausb` like `TESLA_USB_SETUP_STARTED` and `TESLA_USB_SETUP_FINISHED` to track progress.
-- Wifi is detected by looking for `/teslausb/WIFI_ENABLED` and if not, creates the `wpa_supplicant.conf` file in place, using `SSID` and `WIFIPASS` from `teslausb_setup_variables.conf` and reboots.
+- Wifi is detected by looking for `/teslausb/WIFI_ENABLED`; if it is absent and `SSID`/`WIFIPASS` are set in `teslausb_setup_variables.conf`, the credentials are handed to DietPi's own wifi configuration and the device reboots. teslausb does not write `wpa_supplicant.conf` itself, because that fights DietPi for the adapter.
 - The Pi LED will flash patterns (2, 3, 4, 5) as it gets to each stage (labeled in the setup-teslausb script).
 - After the final stage and reboot the LED will go back to normal. Remember, the step to remount the filesystem takes a few minutes.
 
@@ -127,4 +138,4 @@ At this point the next boot should start the Dashcam/music drives like normal. I
 
 # Image modification sources
 
-The sources for the image modifications, and instructions, are in the [pi-gen-sources folder](https://github.com/marcone/teslausb/tree/main-dev/pi-gen-sources).
+There is no custom image any more: teslausb configures an official DietPi image on first boot. The pieces that do it are in the [dietpi folder](https://github.com/nich227/teslausb/tree/main-dev/dietpi).
