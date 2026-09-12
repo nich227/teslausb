@@ -29,12 +29,23 @@ function LiveGraph({ values }: { values: number[] }) {
     area = `0,${h} ${line} ${w},${h}`;
   }
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none"
-      style={{ display: 'block', border: '1px solid rgba(128,128,128,0.25)', borderRadius: 8 }}>
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      width="100%"
+      height={h}
+      preserveAspectRatio="none"
+      style={{ display: 'block', border: '1px solid rgba(128,128,128,0.25)', borderRadius: 8 }}
+    >
       {values.length >= 2 && (
         <>
           <polygon points={area} fill="rgba(9,114,211,0.15)" />
-          <polyline points={line} fill="none" stroke="#0972d3" strokeWidth="2" strokeLinejoin="round" />
+          <polyline
+            points={line}
+            fill="none"
+            stroke="#0972d3"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
         </>
       )}
       <text x="6" y="14" fontSize="11" fill="currentColor" fontFamily="monospace" opacity="0.6">
@@ -69,7 +80,10 @@ export default function Tools({ config }: { config: Config | null }) {
   const [rwBusy, setRwBusy] = useState(false);
 
   useEffect(() => {
-    api.getRwStatus().then(setRw).catch(() => setRw(null));
+    api
+      .getRwStatus()
+      .then(setRw)
+      .catch(() => setRw(null));
   }, []);
 
   useEffect(() => {
@@ -172,12 +186,24 @@ export default function Tools({ config }: { config: Config | null }) {
   }
 
   return (
-    <ContentLayout header={<Header variant="h1" description="Device controls and tests">Tools</Header>}>
+    <ContentLayout
+      header={
+        <Header variant="h1" description="Device controls and tests">
+          Tools
+        </Header>
+      }
+    >
       <SpaceBetween size="l">
         <Container header={<Header variant="h2">Archive / Sync</Header>}>
           <SpaceBetween direction="horizontal" size="s">
-            <Button iconName="slash" onClick={doSync}>Trigger archive/sync</Button>
-            {syncMsg && <Box variant="p" padding={{ top: 'xxs' }}>{syncMsg}</Box>}
+            <Button iconName="slash" onClick={doSync}>
+              Trigger archive/sync
+            </Button>
+            {syncMsg && (
+              <Box variant="p" padding={{ top: 'xxs' }}>
+                {syncMsg}
+              </Box>
+            )}
           </SpaceBetween>
         </Container>
 
@@ -205,8 +231,8 @@ export default function Tools({ config }: { config: Config | null }) {
             <SpaceBetween size="s">
               <StatusIndicator type="warning">Read-write mode is enabled</StatusIndicator>
               <Box variant="p">
-                The root filesystem is writable. Read-write can't be turned off while running, restart the Raspberry Pi
-                to return to read-only (protects the SD card).
+                The root filesystem is writable. Read-write can't be turned off while running,
+                restart the Raspberry Pi to return to read-only (protects the SD card).
               </Box>
             </SpaceBetween>
           ) : (
@@ -228,11 +254,14 @@ export default function Tools({ config }: { config: Config | null }) {
               Restart Raspberry Pi
             </Button>
             {rebootMsg && (
-              <StatusIndicator type={rebooting ? 'in-progress' : 'success'}>{rebootMsg}</StatusIndicator>
+              <StatusIndicator type={rebooting ? 'in-progress' : 'success'}>
+                {rebootMsg}
+              </StatusIndicator>
             )}
             {refreshIn !== null && (
               <Box variant="p">
-                This page will refresh automatically in {refreshIn} second{refreshIn === 1 ? '' : 's'}…
+                This page will refresh automatically in {refreshIn} second
+                {refreshIn === 1 ? '' : 's'}…
               </Box>
             )}
           </SpaceBetween>

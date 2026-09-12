@@ -36,7 +36,13 @@ export default function Diagnostics() {
   }, []);
 
   return (
-    <ContentLayout header={<Header variant="h1" description="Generate and review device diagnostics">Diagnostics</Header>}>
+    <ContentLayout
+      header={
+        <Header variant="h1" description="Generate and review device diagnostics">
+          Diagnostics
+        </Header>
+      }
+    >
       <Container
         header={
           <Header

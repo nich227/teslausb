@@ -1,7 +1,13 @@
 import { useContext, useEffect, useRef } from 'react';
 import { ThemeContext } from '../theme';
 
-export default function LogView({ text, autoscroll = false }: { text: string; autoscroll?: boolean }) {
+export default function LogView({
+  text,
+  autoscroll = false,
+}: {
+  text: string;
+  autoscroll?: boolean;
+}) {
   const ref = useRef<HTMLPreElement>(null);
   const dark = useContext(ThemeContext);
   useEffect(() => {

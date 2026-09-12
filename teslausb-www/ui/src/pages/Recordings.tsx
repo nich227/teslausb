@@ -67,7 +67,11 @@ export default function Recordings() {
 
   return (
     <ContentLayout
-      header={<Header variant="h1" description="Browse and download TeslaCam clips">Recordings</Header>}
+      header={
+        <Header variant="h1" description="Browse and download TeslaCam clips">
+          Recordings
+        </Header>
+      }
     >
       <Table<LsEntry>
         variant="container"
@@ -78,12 +82,20 @@ export default function Recordings() {
         resizableColumns
         header={
           <Header
-            actions={<Button iconName="refresh" onClick={loadTop}>Refresh</Button>}
+            actions={
+              <Button iconName="refresh" onClick={loadTop}>
+                Refresh
+              </Button>
+            }
           >
             TeslaCam
           </Header>
         }
-        empty={<Box textAlign="center" color="inherit">No recordings found.</Box>}
+        empty={
+          <Box textAlign="center" color="inherit">
+            No recordings found.
+          </Box>
+        }
         expandableRows={{
           getItemChildren: (item) => children[item.path] ?? [],
           isItemExpandable: (item) => item.type === 'dir',
@@ -97,8 +109,7 @@ export default function Recordings() {
             cell: (e) =>
               e.type === 'dir' ? (
                 <span>
-                  <Icon name="folder" />{' '}
-                  {e.name}
+                  <Icon name="folder" /> {e.name}
                   {loadingPaths.has(e.path) ? (
                     <>
                       {'  '}

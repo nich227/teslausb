@@ -258,11 +258,14 @@ export async function cp(from: string, to: string): Promise<void> {
   });
 }
 export async function uploadFile(destDir: string, file: File): Promise<void> {
-  await fetch(CGI + 'upload.sh?' + encodeURIComponent(destDir) + '&' + encodeURIComponent(file.name), {
-    method: 'POST',
-    body: file,
-    cache: 'no-store',
-  });
+  await fetch(
+    CGI + 'upload.sh?' + encodeURIComponent(destDir) + '&' + encodeURIComponent(file.name),
+    {
+      method: 'POST',
+      body: file,
+      cache: 'no-store',
+    },
+  );
 }
 
 // Network speed test: stream randomdata.sh and measure throughput.

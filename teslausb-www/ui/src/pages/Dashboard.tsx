@@ -19,13 +19,27 @@ import { ThemeContext } from '../theme';
 
 const POLL_MS = 1000;
 
-function Value({ label, info, children }: { label: string; info?: string; children: React.ReactNode }) {
+function Value({
+  label,
+  info,
+  children,
+}: {
+  label: string;
+  info?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <Box variant="awsui-key-label">
         {label}
         {info && (
-          <Popover dismissButton={false} position="top" size="small" triggerType="custom" content={info}>
+          <Popover
+            dismissButton={false}
+            position="top"
+            size="small"
+            triggerType="custom"
+            content={info}
+          >
             <span style={{ marginLeft: 4, cursor: 'help', verticalAlign: 'middle' }}>
               <Icon name="status-info" size="small" variant="subtle" />
             </span>
@@ -38,7 +52,11 @@ function Value({ label, info, children }: { label: string; info?: string; childr
 }
 
 function Skel({ w = 130 }: { w?: number }) {
-  return <span className="tu-skel" style={{ width: w }}>&nbsp;</span>;
+  return (
+    <span className="tu-skel" style={{ width: w }}>
+      &nbsp;
+    </span>
+  );
 }
 
 // Raspberry Pi temp ranges: <60 ideal, 60-80 caution, >=80 critical/throttle.
@@ -65,8 +83,23 @@ function SignalBar({ pct, dark }: { pct: number; dark: boolean }) {
   // good >=70% (~ -60 dBm), fair 40-70% (~ -60 to -75 dBm), poor <40% (~ < -75 dBm)
   const color = pct >= 70 ? '#037f0c' : pct >= 40 ? '#f0b429' : '#d91515';
   return (
-    <div style={{ background: dark ? '#2a313a' : '#e9ebed', borderRadius: 6, height: 10, overflow: 'hidden', marginTop: 4 }}>
-      <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: color, transition: 'width .3s ease' }} />
+    <div
+      style={{
+        background: dark ? '#2a313a' : '#e9ebed',
+        borderRadius: 6,
+        height: 10,
+        overflow: 'hidden',
+        marginTop: 4,
+      }}
+    >
+      <div
+        style={{
+          width: `${Math.min(100, pct)}%`,
+          height: '100%',
+          background: color,
+          transition: 'width .3s ease',
+        }}
+      />
     </div>
   );
 }
@@ -86,7 +119,12 @@ function DiskBar({ pct, info, dark }: { pct: number; info: string; dark: boolean
         }}
       >
         <div
-          style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: color, transition: 'width .3s ease' }}
+          style={{
+            width: `${Math.min(100, pct)}%`,
+            height: '100%',
+            background: color,
+            transition: 'width .3s ease',
+          }}
         />
       </div>
       <Box variant="small" padding={{ top: 'xxs' }}>
@@ -115,7 +153,12 @@ function TempBar({ celsius, dark }: { celsius: number; dark: boolean }) {
         }}
       >
         <div
-          style={{ width: `${pct}%`, height: '100%', background: color, transition: 'width .3s ease' }}
+          style={{
+            width: `${pct}%`,
+            height: '100%',
+            background: color,
+            transition: 'width .3s ease',
+          }}
         />
       </div>
       <Box variant="small" padding={{ top: 'xxs' }}>
@@ -139,7 +182,10 @@ export default function Dashboard({ config }: { config: Config | null }) {
 
   useEffect(() => {
     if (!hasCam) return;
-    api.getCamUsage().then(setCamUsage).catch(() => setCamUsage(null));
+    api
+      .getCamUsage()
+      .then(setCamUsage)
+      .catch(() => setCamUsage(null));
   }, [hasCam]);
 
   async function load() {
@@ -172,7 +218,9 @@ export default function Dashboard({ config }: { config: Config | null }) {
   const loading = status === null;
   const throttle = status ? throttleFlags(status.throttled) : [];
   const usedPct =
-    status && status.total_space ? ((status.total_space - status.free_space) / status.total_space) * 100 : 0;
+    status && status.total_space
+      ? ((status.total_space - status.free_space) / status.total_space) * 100
+      : 0;
   const wifi = status ? wifiPercent(status.wifi_strength) : null;
   const tempC = status && status.cpu_temp ? Number(status.cpu_temp) / 1000 : null;
   const usageData = camUsage
@@ -182,13 +230,19 @@ export default function Dashboard({ config }: { config: Config | null }) {
         { title: 'SavedClips', value: camUsage.SavedClips, color: '#037f0c' },
       ].filter((d) => d.value > 0)
     : [];
-  const usageTotal = camUsage ? camUsage.RecentClips + camUsage.SentryClips + camUsage.SavedClips : 0;
+  const usageTotal = camUsage
+    ? camUsage.RecentClips + camUsage.SentryClips + camUsage.SavedClips
+    : 0;
 
   const systemContent = (
     <SpaceBetween size="m">
       <ColumnLayout columns={2} variant="text-grid">
         <Value label="Uptime">
-          {loading ? <Skel /> : `${uptimeString(status!.uptime)} (since ${bootTimeUTC(status!.uptime)})`}
+          {loading ? (
+            <Skel />
+          ) : (
+            `${uptimeString(status!.uptime)} (since ${bootTimeUTC(status!.uptime)})`
+          )}
         </Value>
         <Value label="Drives">
           {loading ? (
@@ -214,9 +268,12 @@ export default function Dashboard({ config }: { config: Config | null }) {
         {!loading && status!.external_5v && status!.external_5v !== 'N/A' && (
           <Value label="External 5V">{parseFloat(status!.external_5v).toFixed(3)} V</Value>
         )}
-        {!loading && status!.rtc_batt_v && status!.rtc_batt_v !== 'N/A' && parseFloat(status!.rtc_batt_v) >= 2.5 && (
-          <Value label="RTC battery">{parseFloat(status!.rtc_batt_v).toFixed(3)} V</Value>
-        )}
+        {!loading &&
+          status!.rtc_batt_v &&
+          status!.rtc_batt_v !== 'N/A' &&
+          parseFloat(status!.rtc_batt_v) >= 2.5 && (
+            <Value label="RTC battery">{parseFloat(status!.rtc_batt_v).toFixed(3)} V</Value>
+          )}
       </ColumnLayout>
       {loading ? (
         <div>
@@ -227,7 +284,9 @@ export default function Dashboard({ config }: { config: Config | null }) {
         <TempBar celsius={tempC} dark={dark} />
       ) : null}
       <Button loading={toggling} disabled={loading} onClick={onToggleDrives}>
-        {status?.drives_active === 'yes' ? 'Disconnect drives from Tesla' : 'Connect drives to Tesla'}
+        {status?.drives_active === 'yes'
+          ? 'Disconnect drives from Tesla'
+          : 'Connect drives to Tesla'}
       </Button>
     </SpaceBetween>
   );
@@ -315,9 +374,19 @@ export default function Dashboard({ config }: { config: Config | null }) {
   );
 
   return (
-    <ContentLayout header={<Header variant="h1" description="Live status of your teslausb device">Dashboard</Header>}>
+    <ContentLayout
+      header={
+        <Header variant="h1" description="Live status of your teslausb device">
+          Dashboard
+        </Header>
+      }
+    >
       <SpaceBetween size="l">
-        {error && <Alert type="error" header="Could not reach the device">{error}</Alert>}
+        {error && (
+          <Alert type="error" header="Could not reach the device">
+            {error}
+          </Alert>
+        )}
         {throttle.length > 0 && (
           <Alert type="warning" header="Power / thermal warnings">
             <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -328,10 +397,7 @@ export default function Dashboard({ config }: { config: Config | null }) {
           </Alert>
         )}
         <Grid
-          gridDefinition={[
-            { colspan: { default: 12, s: 6 } },
-            { colspan: { default: 12, s: 6 } },
-          ]}
+          gridDefinition={[{ colspan: { default: 12, s: 6 } }, { colspan: { default: 12, s: 6 } }]}
         >
           <Container header={<Header variant="h2">System</Header>} fitHeight>
             {systemContent}
@@ -342,7 +408,11 @@ export default function Dashboard({ config }: { config: Config | null }) {
         </Grid>
         {hasCam && (
           <Container
-            header={<Header variant="h2" description="Space used by each recording category">Recordings storage</Header>}
+            header={
+              <Header variant="h2" description="Space used by each recording category">
+                Recordings storage
+              </Header>
+            }
           >
             {camUsage === null ? (
               <Box textAlign="center" padding={{ vertical: 'l' }}>
@@ -351,8 +421,14 @@ export default function Dashboard({ config }: { config: Config | null }) {
                   style={{ width: 160, height: 160, borderRadius: '50%', margin: '0 auto' }}
                 />
                 <Box padding={{ top: 'm' }}>
-                  <div className="tu-skel" style={{ width: 220, height: 14, borderRadius: 6, margin: '6px auto' }} />
-                  <div className="tu-skel" style={{ width: 160, height: 14, borderRadius: 6, margin: '6px auto' }} />
+                  <div
+                    className="tu-skel"
+                    style={{ width: 220, height: 14, borderRadius: 6, margin: '6px auto' }}
+                  />
+                  <div
+                    className="tu-skel"
+                    style={{ width: 160, height: 14, borderRadius: 6, margin: '6px auto' }}
+                  />
                 </Box>
               </Box>
             ) : (
@@ -368,9 +444,15 @@ export default function Dashboard({ config }: { config: Config | null }) {
                   { key: 'Size', value: spaceString(d.value) },
                   { key: 'Share', value: ((d.value / sum) * 100).toFixed(1) + '%' },
                 ]}
-                segmentDescription={(d, sum) => `${spaceString(d.value)} (${((d.value / sum) * 100).toFixed(0)}%)`}
+                segmentDescription={(d, sum) =>
+                  `${spaceString(d.value)} (${((d.value / sum) * 100).toFixed(0)}%)`
+                }
                 ariaLabel="Recordings space breakdown"
-                empty={<Box textAlign="center" color="inherit">No recordings.</Box>}
+                empty={
+                  <Box textAlign="center" color="inherit">
+                    No recordings.
+                  </Box>
+                }
               />
             )}
           </Container>

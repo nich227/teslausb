@@ -42,7 +42,8 @@ export default function Files({ config }: { config: Config | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root, path]);
 
-  const fullPath = (e: LsEntry) => `${root}/${path ? path + '/' : ''}${e.name}`.replace(/\/+/g, '/');
+  const fullPath = (e: LsEntry) =>
+    `${root}/${path ? path + '/' : ''}${e.name}`.replace(/\/+/g, '/');
 
   function openDir(e: LsEntry) {
     setPath(path ? `${path}/${e.name}` : e.name);
@@ -50,18 +51,29 @@ export default function Files({ config }: { config: Config | null }) {
 
   const crumbs = [
     { text: drives.find((d) => d.id === root)?.text ?? root, href: '' },
-    ...path.split('/').filter(Boolean).map((seg, i, arr) => ({ text: seg, href: arr.slice(0, i + 1).join('/') })),
+    ...path
+      .split('/')
+      .filter(Boolean)
+      .map((seg, i, arr) => ({ text: seg, href: arr.slice(0, i + 1).join('/') })),
   ];
 
   return (
-    <ContentLayout header={<Header variant="h1" description="Manage files on the music / lightshow / boombox drives">Files</Header>}>
+    <ContentLayout
+      header={
+        <Header variant="h1" description="Manage files on the music / lightshow / boombox drives">
+          Files
+        </Header>
+      }
+    >
       <Container
         header={
           <Header
             variant="h2"
             actions={
               <SpaceBetween direction="horizontal" size="xs">
-                <Button iconName="refresh" loading={loading} onClick={load}>Refresh</Button>
+                <Button iconName="refresh" loading={loading} onClick={load}>
+                  Refresh
+                </Button>
                 <Button
                   iconName="folder"
                   onClick={async () => {
@@ -74,11 +86,15 @@ export default function Files({ config }: { config: Config | null }) {
                 >
                   New folder
                 </Button>
-                <Button iconName="upload" onClick={() => fileInput.current?.click()}>Upload</Button>
+                <Button iconName="upload" onClick={() => fileInput.current?.click()}>
+                  Upload
+                </Button>
                 <Button
                   iconName="download"
                   disabled={selected.length === 0 || selected.some((e) => e.type === 'dir')}
-                  onClick={() => selected.forEach((e) => window.open(api.downloadUrl(fullPath(e)), '_blank'))}
+                  onClick={() =>
+                    selected.forEach((e) => window.open(api.downloadUrl(fullPath(e)), '_blank'))
+                  }
                 >
                   Download
                 </Button>
@@ -126,7 +142,11 @@ export default function Files({ config }: { config: Config | null }) {
             onSelectionChange={(e) => setSelected(e.detail.selectedItems)}
             items={entries}
             trackBy="path"
-            empty={<Box textAlign="center" color="inherit">No files</Box>}
+            empty={
+              <Box textAlign="center" color="inherit">
+                No files
+              </Box>
+            }
             columnDefinitions={[
               {
                 id: 'name',

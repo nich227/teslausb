@@ -51,7 +51,13 @@ export default function Logs() {
   }, [which, auto]);
 
   return (
-    <ContentLayout header={<Header variant="h1" description="Live device logs">Logs</Header>}>
+    <ContentLayout
+      header={
+        <Header variant="h1" description="Live device logs">
+          Logs
+        </Header>
+      }
+    >
       <Container
         header={
           <Header
@@ -84,7 +90,12 @@ export default function Logs() {
               <div
                 key={i}
                 className="tu-skel"
-                style={{ height: 12, margin: '7px 0', width: `${45 + ((i * 13) % 50)}%`, borderRadius: 4 }}
+                style={{
+                  height: 12,
+                  margin: '7px 0',
+                  width: `${45 + ((i * 13) % 50)}%`,
+                  borderRadius: 4,
+                }}
               />
             ))}
           </div>

@@ -48,7 +48,14 @@ const ICON_PATHS: Record<string, string[]> = {
 
 function Ico({ n }: { n: string }) {
   return (
-    <svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor" style={{ display: 'block' }} aria-hidden="true">
+    <svg
+      viewBox="0 0 16 16"
+      width="1em"
+      height="1em"
+      fill="currentColor"
+      style={{ display: 'block' }}
+      aria-hidden="true"
+    >
       {(ICON_PATHS[n] || []).map((d, i) => (
         <path key={i} d={d} />
       ))}
@@ -144,11 +151,14 @@ export default function Viewer() {
       for (const grp of Object.keys(segMap)) {
         g[grp] = {};
         for (const seq of Object.keys(segMap[grp]))
-          g[grp][seq] = Array.from(segMap[grp][seq].values()).sort((a, b) => a.ts.localeCompare(b.ts));
+          g[grp][seq] = Array.from(segMap[grp][seq].values()).sort((a, b) =>
+            a.ts.localeCompare(b.ts),
+          );
       }
       setGroups(g);
       setJsonBySeq(jsons);
-      const firstGroup = GROUP_ORDER.find((x) => g[x] && Object.keys(g[x]).length) || Object.keys(g)[0] || '';
+      const firstGroup =
+        GROUP_ORDER.find((x) => g[x] && Object.keys(g[x]).length) || Object.keys(g)[0] || '';
       setGroup(firstGroup);
       if (firstGroup) {
         const seqs = Object.keys(g[firstGroup]).sort().reverse();
@@ -197,7 +207,8 @@ export default function Viewer() {
       if (!scrubbing.current) {
         const v = masterRef.current();
         const dur = durationRef.current;
-        if (v && dur > 0) paintBar(((segIdxRef.current * SEG_MS + v.currentTime * 1000) / dur) * 100);
+        if (v && dur > 0)
+          paintBar(((segIdxRef.current * SEG_MS + v.currentTime * 1000) / dur) * 100);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -346,7 +357,11 @@ export default function Viewer() {
     }
   }
 
-  const orderedSeqs = group ? Object.keys(groups[group] || {}).sort().reverse() : [];
+  const orderedSeqs = group
+    ? Object.keys(groups[group] || {})
+        .sort()
+        .reverse()
+    : [];
   function prevNextClip(dir: 'prev' | 'next') {
     const i = orderedSeqs.indexOf(seqName);
     const ni = dir === 'prev' ? i - 1 : i + 1;
@@ -360,7 +375,10 @@ export default function Viewer() {
     ? Object.keys(groups[group] || {})
         .sort()
         .reverse()
-        .map((s) => ({ value: s, label: s.replace('_', ' ').replace(/-/g, (m, i) => (i > 9 ? ':' : '-')) }))
+        .map((s) => ({
+          value: s,
+          label: s.replace('_', ' ').replace(/-/g, (m, i) => (i > 9 ? ':' : '-')),
+        }))
     : [];
 
   // Live timestamp = current segment start advanced by the offset within it.
@@ -381,7 +399,9 @@ export default function Viewer() {
             selectedOption={group ? { value: group, label: group } : null}
             onChange={(e) => {
               const g = e.detail.selectedOption.value!;
-              const seqs = Object.keys(groups[g] || {}).sort().reverse();
+              const seqs = Object.keys(groups[g] || {})
+                .sort()
+                .reverse();
               selectSequence(g, seqs[0] || '');
             }}
             options={groupOptions}
@@ -415,7 +435,11 @@ export default function Viewer() {
             onPointerMove={pokeControls}
             onPointerDown={pokeControls}
           >
-            <div className={`tv-grid ${layout}`} style={{ aspectRatio: '3 / 2' }} onClick={togglePlay}>
+            <div
+              className={`tv-grid ${layout}`}
+              style={{ aspectRatio: '3 / 2' }}
+              onClick={togglePlay}
+            >
               <video
                 ref={(el) => (videoRefs.current.front = el)}
                 className="frontview"
@@ -425,9 +449,27 @@ export default function Viewer() {
                 onTimeUpdate={onMasterTimeUpdate}
                 onEnded={onMasterEnded}
               />
-              <video ref={(el) => (videoRefs.current.left_repeater = el)} className="leftrepeaterview tv-flip" playsInline muted {...bufHandlers} />
-              <video ref={(el) => (videoRefs.current.right_repeater = el)} className="rightrepeaterview tv-flip" playsInline muted {...bufHandlers} />
-              <video ref={(el) => (videoRefs.current.back = el)} className="backview" playsInline muted {...bufHandlers} />
+              <video
+                ref={(el) => (videoRefs.current.left_repeater = el)}
+                className="leftrepeaterview tv-flip"
+                playsInline
+                muted
+                {...bufHandlers}
+              />
+              <video
+                ref={(el) => (videoRefs.current.right_repeater = el)}
+                className="rightrepeaterview tv-flip"
+                playsInline
+                muted
+                {...bufHandlers}
+              />
+              <video
+                ref={(el) => (videoRefs.current.back = el)}
+                className="backview"
+                playsInline
+                muted
+                {...bufHandlers}
+              />
               <div ref={mapDivRef} className="mapview tv-cell">
                 {mapUrl ? (
                   <iframe className="tv-mapframe" title="Sentry location" src={mapUrl} />
@@ -489,21 +531,41 @@ export default function Viewer() {
               </div>
               <div className="tcv-controls-row" onClick={(e) => e.stopPropagation()}>
                 <div className="tcv-group">
-                  <button className="tcv-btn" onClick={() => prevNextClip('prev')} aria-label="Previous clip">
+                  <button
+                    className="tcv-btn"
+                    onClick={() => prevNextClip('prev')}
+                    aria-label="Previous clip"
+                  >
                     <Ico n="chevron-left" />
                   </button>
-                  <button className="tcv-btn" onClick={() => seekGlobal(posMs - 10000)} aria-label="Rewind 10 seconds">
+                  <button
+                    className="tcv-btn"
+                    onClick={() => seekGlobal(posMs - 10000)}
+                    aria-label="Rewind 10 seconds"
+                  >
                     <Ico n="ccw" />
                     <span className="tcv-skip-num">10</span>
                   </button>
-                  <button className="tcv-btn tcv-play" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
+                  <button
+                    className="tcv-btn tcv-play"
+                    onClick={togglePlay}
+                    aria-label={playing ? 'Pause' : 'Play'}
+                  >
                     <Ico n={playing ? 'pause' : 'play'} />
                   </button>
-                  <button className="tcv-btn" onClick={() => seekGlobal(posMs + 10000)} aria-label="Skip forward 10 seconds">
+                  <button
+                    className="tcv-btn"
+                    onClick={() => seekGlobal(posMs + 10000)}
+                    aria-label="Skip forward 10 seconds"
+                  >
                     <Ico n="cw" />
                     <span className="tcv-skip-num">10</span>
                   </button>
-                  <button className="tcv-btn" onClick={() => prevNextClip('next')} aria-label="Next clip">
+                  <button
+                    className="tcv-btn"
+                    onClick={() => prevNextClip('next')}
+                    aria-label="Next clip"
+                  >
                     <Ico n="chevron-right" />
                   </button>
                 </div>

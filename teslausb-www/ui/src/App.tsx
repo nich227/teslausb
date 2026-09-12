@@ -31,7 +31,9 @@ export default function App() {
   }, [dark]);
 
   useEffect(() => {
-    getConfig().then(setConfig).catch(() => setConfig(null));
+    getConfig()
+      .then(setConfig)
+      .catch(() => setConfig(null));
   }, []);
 
   const hasCam = config?.has_cam === 'yes';
@@ -45,7 +47,9 @@ export default function App() {
     { type: 'link', text: 'Diagnostics', href: '#/diagnostics' },
     { type: 'link', text: 'Logs', href: '#/logs' },
     { type: 'link', text: 'Tools', href: '#/tools' },
-    ...(numDrives > 0 ? [{ type: 'link', text: 'Files', href: '#/files' } as SideNavigationProps.Item] : []),
+    ...(numDrives > 0
+      ? [{ type: 'link', text: 'Files', href: '#/files' } as SideNavigationProps.Item]
+      : []),
     ...(hasCam
       ? ([
           { type: 'divider' },
@@ -54,7 +58,12 @@ export default function App() {
         ] as SideNavigationProps.Item[])
       : []),
     { type: 'divider' },
-    { type: 'link', text: 'TeslaUSB on GitHub', href: 'https://github.com/marcone/teslausb', external: true },
+    {
+      type: 'link',
+      text: 'TeslaUSB on GitHub',
+      href: 'https://github.com/marcone/teslausb',
+      external: true,
+    },
   ];
 
   const activeHref = '#' + (location.pathname === '/' ? '/' : location.pathname);
