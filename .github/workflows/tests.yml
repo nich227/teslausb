@@ -1,0 +1,38 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: usb-link-watchdog
+        run: ./tests/usb-link-watchdog-test.sh -v
+
+  integration:
+    name: Integration tests (DietPi ${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [Bookworm, Trixie]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The DietPi container image is ~60 MB; keep it between runs so the suite
+      # is not re-downloading it on every push.
+      - name: Cache DietPi container image
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/dietpi-images
+          key: dietpi-${{ matrix.distro }}-x86_64-${{ hashFiles('tests/docker/extract-dietpi-rootfs.sh') }}
+
+      - name: Run integration tests
+        env:
+          DIETPI_DISTRO: ${{ matrix.distro }}
+        # Lint runs in its own workflow (shellcheck.yml), so skip it here.
+        run: |
+          DIETPI_CACHE_DIR="$HOME/.cache/dietpi-images" \
+            ./tests/run-integration-tests.sh --no-lint
