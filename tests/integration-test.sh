@@ -1098,6 +1098,20 @@ assert_grep "systemctl enable teslausb-setup.service" /tmp/systemctl.calls "unit
 assert_grep "daemon-reload" /tmp/systemctl.calls "systemd reloaded"
 assert_file /tmp/handover.calls "handed over to the setup driver"
 
+start_case "uses scripts staged on the boot partition instead of downloading"
+# /boot/teslausb-local is how an offline install works, and how the VM test runs
+# the working tree rather than whatever is published on GitHub.
+bootstrap_env
+mkdir -p /boot/teslausb-local
+echo "#!/bin/bash" > /boot/teslausb-local/first-boot.sh
+echo "# staged unit" > /boot/teslausb-local/teslausb-setup.service
+rm -f /tmp/curl.calls
+run_bootstrap
+assert_grep "using /boot/teslausb-local/first-boot.sh" /tmp/bootstrap.log "used the staged driver"
+assert_grep "staged unit" /lib/systemd/system/teslausb-setup.service "used the staged unit"
+assert_no_file /tmp/curl.calls "downloaded nothing"
+rm -rf /boot/teslausb-local
+
 start_case "installs dos2unix when DietPi does not have it"
 bootstrap_env
 # hide the stub so the check sees a system without dos2unix

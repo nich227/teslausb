@@ -28,6 +28,18 @@ log () {
 
 fetch () {
   local url="$1" dest="$2" tries=0
+  local name="${url##*/}"
+
+  # An offline copy on the boot partition wins. This is what lets an install run
+  # without reaching GitHub, and it is how the VM test exercises the working tree
+  # rather than whatever is currently published.
+  if [ -f "/boot/teslausb-local/$name" ]
+  then
+    log "using /boot/teslausb-local/$name"
+    cp "/boot/teslausb-local/$name" "$dest"
+    return 0
+  fi
+
   until curl -fsSL --retry 3 -o "$dest" "$url"
   do
     tries=$(( tries + 1 ))
