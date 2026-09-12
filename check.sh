@@ -18,4 +18,5 @@ shellcheck --exclude=SC1091 \
            ./run/remountfs_rw \
            ./run/send-push-message \
            ./run/temperature_monitor \
+           ./run/usb-link-watchdog.sh \
            ./run/waitforidle

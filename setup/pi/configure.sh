@@ -359,6 +359,47 @@ function check_and_install_temperature_monitor () {
   return 0
 }
 
+function install_usb_link_watchdog () {
+  local install_path="$1"
+
+  systemctl disable usb-link-watchdog.timer &> /dev/null || true
+  rm -f /etc/systemd/system/usb-link-watchdog.service /etc/systemd/system/usb-link-watchdog.timer
+
+  if [ "${USB_LINK_WATCHDOG:-true}" != "true" ]
+  then
+    log_progress "USB link watchdog disabled, skipping"
+    return 0
+  fi
+
+  log_progress "Installing USB link watchdog"
+  copy_script run/usb-link-watchdog.sh "$install_path"
+
+  cat << EOF > /lib/systemd/system/usb-link-watchdog.service
+[Unit]
+Description=Reboot if the car has stopped seeing the teslausb drive
+After=teslausb.service
+
+[Service]
+Type=oneshot
+ExecStart=$install_path/usb-link-watchdog.sh
+EOF
+
+  cat << EOF > /lib/systemd/system/usb-link-watchdog.timer
+[Unit]
+Description=Check every 5 minutes that the car is still writing to the drive
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl enable usb-link-watchdog.timer
+}
+
 function install_archive_scripts () {
   local install_path="$1"
   local archive_module="$2"
@@ -829,3 +870,5 @@ WantedBy=backingfiles.mount
 EOF
 
 systemctl enable teslausb.service
+
+install_usb_link_watchdog /root/bin
