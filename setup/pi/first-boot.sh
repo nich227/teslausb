@@ -89,6 +89,35 @@ function get_script () {
   chmod +x "$local_path/$name"
 }
 
+# Wait for the network before anything that needs it.
+#
+# The unit wants network-online.target, but on DietPi nothing necessarily waits
+# on it: DietPi manages interfaces with ifupdown and systemd-networkd-wait-online
+# is disabled, so the target can be reached while wifi is still associating. The
+# device is in a car on wifi, so assume nothing and check.
+function wait_for_network () {
+  local waited=0
+  local limit="${NETWORK_WAIT_SECONDS:-120}"
+
+  while [ "$waited" -lt "$limit" ]
+  do
+    if ip route get 1.1.1.1 &> /dev/null
+    then
+      [ "$waited" -gt 0 ] && setup_progress "network came up after ${waited}s"
+      return 0
+    fi
+    if [ "$waited" = 0 ]
+    then
+      setup_progress "waiting up to ${limit}s for the network"
+    fi
+    sleep 5
+    waited=$(( waited + 5 ))
+  done
+
+  setup_progress "WARNING: still no route to the network after ${limit}s; carrying on anyway"
+  return 0
+}
+
 function safesource {
   cat <<EOF > /tmp/checksetupconf
 #!/bin/bash -eu
@@ -113,7 +142,16 @@ then
     /root/bin/remountfs_rw
   fi
   mv /teslausb/teslausb_setup_variables.conf /root/
-  dos2unix /root/teslausb_setup_variables.conf
+  # DietPi does not ship dos2unix, and this script runs with -e, so fall back to
+  # stripping the line endings directly rather than dying with the config file
+  # already moved off the boot partition.
+  if command -v dos2unix > /dev/null
+  then
+    dos2unix /root/teslausb_setup_variables.conf
+  else
+    setup_progress "dos2unix not installed, stripping CRLF line endings directly"
+    sed -i 's/\r$//' /root/teslausb_setup_variables.conf
+  fi
 fi
 if [ -e "/root/teslausb_setup_variables.conf" ]
 then
@@ -242,6 +280,7 @@ then
   then
     REPO=${REPO:-nich227}
     BRANCH=${BRANCH:-main-dev}
+    wait_for_network
     setup_progress "Grabbing main setup file."
     if ! get_script /root/bin setup-teslausb setup/pi
     then

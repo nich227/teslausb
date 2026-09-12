@@ -24,5 +24,7 @@ shellcheck --exclude=SC1091 \
            ./tests/usb-link-watchdog-test.sh \
            ./tests/integration-test.sh \
            ./tests/run-integration-tests.sh \
+           ./tests/coverage.sh \
+           ./tools/prepare-boot-partition.sh \
            ./tests/docker/build-dietpi-base.sh \
            ./tests/docker/extract-dietpi-rootfs.sh

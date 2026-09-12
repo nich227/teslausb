@@ -1,10 +1,14 @@
 [Unit]
 Description=TeslaUSB setup driver
 # DietPi has no rc.local, so setup is driven from here. It must run after the
-# network is up because setup fetches its own scripts, and after the boot
-# partition is mounted because that is where the config and the progress
-# markers live.
-After=network-online.target boot.mount
+# boot partition is mounted, because that is where the config and the progress
+# markers live, and after DietPi has finished its own boot work.
+#
+# network-online.target is requested, but on DietPi nothing necessarily waits on
+# it: DietPi uses ifupdown and systemd-networkd-wait-online is disabled, so the
+# target can be reached before wifi has associated. first-boot.sh therefore waits
+# for the network itself before it needs it.
+After=boot.mount dietpi-postboot.service network-online.target
 Wants=network-online.target
 ConditionPathExists=!/teslausb/TESLAUSB_SETUP_FINISHED
 

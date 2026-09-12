@@ -477,6 +477,72 @@ run_driver
 assert_file /root/teslausb_setup_variables.conf "config moved to /root"
 assert_no_file /tmp/bootpart/teslausb_setup_variables.conf "removed from the boot partition"
 
+start_case "a config with Windows line endings works without dos2unix installed"
+# DietPi does not ship dos2unix, and this script runs with -e: before the fix it
+# died here with the config already moved off the boot partition.
+setup_driver_env
+install_fake_setup
+mv "$STUBS/dos2unix" /tmp/dos2unix.away
+printf 'export ARCHIVE_SYSTEM=none\r\nexport TESLAUSB_HOSTNAME=teslausb\r\n' \
+  > /tmp/bootpart/teslausb_setup_variables.conf
+run_driver
+assert_file /root/teslausb_setup_variables.conf "config still moved to /root"
+if grep -q $'\r' /root/teslausb_setup_variables.conf
+then not_ok "carriage returns were left in the config"
+else ok "line endings stripped without dos2unix"
+fi
+assert_grep "stripping CRLF line endings directly" /tmp/driver.log "said what it did"
+assert_file /tmp/setup.calls "setup still ran"
+mv /tmp/dos2unix.away "$STUBS/dos2unix"
+
+start_case "dos2unix is used when it is available"
+setup_driver_env
+install_fake_setup
+cat > "$STUBS/dos2unix" <<'EOF'
+#!/bin/bash
+echo "dos2unix $*" >> /tmp/dos2unix.calls
+sed -i 's/\r$//' "$1"
+EOF
+chmod +x "$STUBS/dos2unix"
+rm -f /tmp/dos2unix.calls
+printf 'export ARCHIVE_SYSTEM=none\r\n' > /tmp/bootpart/teslausb_setup_variables.conf
+run_driver
+assert_file /tmp/dos2unix.calls "used dos2unix"
+
+start_case "waits for the network before fetching the setup script"
+# On DietPi nothing necessarily waits on network-online.target, so the driver has
+# to check for itself.
+setup_driver_env
+rm -f /root/bin/setup-teslausb
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+cat > "$STUBS/ip" <<'EOF'
+#!/bin/bash
+# no route the first time, then a route
+if [ -e /tmp/ip.called ]; then exit 0; fi
+touch /tmp/ip.called
+exit 1
+EOF
+chmod +x "$STUBS/ip"
+rm -f /tmp/ip.called
+export NETWORK_WAIT_SECONDS=30
+run_driver
+assert_grep "waiting up to 30s for the network" /tmp/driver.log "waited"
+assert_grep "network came up after" /tmp/driver.log "noticed when it came up"
+assert_file /tmp/curl.calls "then fetched the setup script"
+
+start_case "carries on if the network never appears, rather than hanging forever"
+setup_driver_env
+rm -f /root/bin/setup-teslausb
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+printf '#!/bin/bash\nexit 1\n' > "$STUBS/ip"
+chmod +x "$STUBS/ip"
+export NETWORK_WAIT_SECONDS=5
+run_driver
+assert_grep "still no route to the network after 5s" /tmp/driver.log "gave up and said so"
+assert_file /tmp/curl.calls "still tried to fetch"
+unset NETWORK_WAIT_SECONDS
+rm -f "$STUBS/ip"
+
 start_case "runs run_once and renames it"
 setup_driver_env
 install_fake_setup

@@ -13,7 +13,7 @@ mkdir -p /var/lib/nginx
 mount /var/log/nginx
 mount /var/lib/nginx
 
-apt-get -y --force-yes install nginx fcgiwrap libnginx-mod-http-fancyindex fuse libfuse-dev g++ net-tools wireless-tools ethtool
+apt-get -y install nginx fcgiwrap libnginx-mod-http-fancyindex fuse libfuse-dev g++ net-tools wireless-tools ethtool
 
 # install data files and config files
 systemctl stop nginx.service &> /dev/null || true
@@ -34,7 +34,7 @@ ln -sf /etc/nginx/sites-available/teslausb.nginx /etc/nginx/sites-enabled/defaul
 # Setup /etc/nginx/.htpasswd if user requested web auth, otherwise disable auth_basic
 if [ -n "${WEB_USERNAME:-}" ] && [ -n "${WEB_PASSWORD:-}" ]
 then
-  apt-get -y --force-yes install apache2-utils
+  apt-get -y install apache2-utils
   htpasswd -bc /etc/nginx/.htpasswd "$WEB_USERNAME" "$WEB_PASSWORD"
   sed -i 's/auth_basic off/auth_basic "Restricted Content"/' /etc/nginx/sites-available/teslausb.nginx
 else
@@ -76,7 +76,7 @@ then
   mkdir -p /var/www/html/fs
   copy_script run/auto.www /root/bin
   echo "/var/www/html/fs  /root/bin/auto.www" > /etc/auto.master.d/www.autofs
-  apt-get -y --force-yes install zip
+  apt-get -y install zip
 fi
 
 setup_progress "done configuring nginx"

@@ -1192,7 +1192,7 @@ if [ -n "${INSTALL_USER_REQUESTED_PACKAGES:-}" ]
 then
   setup_progress "Installing user requested packages: ${INSTALL_USER_REQUESTED_PACKAGES}"
   read -r -a EXTRA_PACKAGES <<< "${INSTALL_USER_REQUESTED_PACKAGES[@]}"
-  DEBIAN_FRONTEND=noninteractive apt-get -y --force-yes install "${EXTRA_PACKAGES[@]}"
+  DEBIAN_FRONTEND=noninteractive apt-get -y install "${EXTRA_PACKAGES[@]}"
 fi
 
 setup_progress "Running post-setup tasks"
