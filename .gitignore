@@ -4,3 +4,7 @@
 *.ipr
 *.iws
 .idea/
+
+# macOS AppleDouble metadata, created when the repo is served over SMB/AFP
+._*
+.AppleDouble
