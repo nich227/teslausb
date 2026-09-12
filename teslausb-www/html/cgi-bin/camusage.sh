@@ -36,6 +36,9 @@ if [ -f "$CACHE" ]; then
   age=$(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) ))
   if [ "$age" -ge "$TTL" ]; then
     # Refresh in the background (detached so fcgiwrap doesn't reap it).
+    # The quote-juggling below deliberately expands $LOCK/$SRC/$CACHE in the
+    # parent shell before the child sees them.
+    # shellcheck disable=SC2016
     setsid bash -c '
       exec 9>"'"$LOCK"'"
       flock -n 9 || exit 0

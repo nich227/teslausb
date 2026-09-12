@@ -4,7 +4,7 @@ declare -a urlargs
 IFS='&' read -r -a urlargs <<<"$QUERY_STRING" 
 
 declare -i len=${#urlargs[@]}
-for ((i=0; i<${len}; i++ ))
+for ((i=0; i<len; i++ ))
 do
   val="${urlargs[i]//+/ }"
   urlargs[i]="$(echo -e "${val//%/\\x}")"
@@ -15,7 +15,7 @@ then
   exit
 fi
 
-lspath="${urlargs[@]:1}"
+lspath="${urlargs[*]:1}"
 if [[ -z "$lspath" ]]
 then
   lspath=.

@@ -4,7 +4,7 @@ VIN=$(sudo grep "^export TESLA_BLE_VIN=" /root/teslausb_setup_variables.conf | c
 
 
 
-message=$(sudo /root/bin/tesla-control -ble -vin ${VIN^^} add-key-request /root/.ble/key_public.pem owner cloud_key 2>&1)
+message=$(sudo /root/bin/tesla-control -ble -vin "${VIN^^}" add-key-request /root/.ble/key_public.pem owner cloud_key 2>&1)
 result=$?
 
 status_code="202 Accepted"
