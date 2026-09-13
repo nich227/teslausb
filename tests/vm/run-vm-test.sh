@@ -48,6 +48,11 @@ CONF="$SCRIPT_DIR/vm-test.conf"
 SSH_PORT=2222
 TIMEOUT=900
 DISTRO=Bookworm
+JUMP_HOST=""
+VM_DNS=""
+STATIC_IP=""
+STATIC_MASK="255.255.255.0"
+STATIC_GW=""
 
 while [ $# -gt 0 ]
 do
@@ -60,6 +65,11 @@ do
     --ssh-port)  SSH_PORT="$2"; shift 2 ;;
     --timeout)   TIMEOUT="$2"; shift 2 ;;
     --distro)    DISTRO="$2"; shift 2 ;;
+    --jump-host) JUMP_HOST="$2"; shift 2 ;;
+    --dns)       VM_DNS="$2"; shift 2 ;;
+    --static-ip) STATIC_IP="$2"; shift 2 ;;
+    --mask)      STATIC_MASK="$2"; shift 2 ;;
+    --gateway)   STATIC_GW="$2"; shift 2 ;;
     -h|--help)   sed -n '2,35p' "$0"; exit 0 ;;
     *)           echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -68,6 +78,9 @@ done
 readonly IMAGE_NAME="DietPi_VM-x86_64-${DISTRO}.img.xz"
 readonly BASE_URL="https://dietpi.com/downloads/images"
 readonly VM_IMAGE="$CACHE_DIR/teslausb-vm.img"
+# QEMU boots a throwaway overlay rather than the prepared image, so the image
+# stays pristine and every run starts from the same known state.
+readonly VM_OVERLAY="$CACHE_DIR/teslausb-vm-run.qcow2"
 readonly SERIAL_LOG="${TMPDIR:-/tmp}/teslausb-vm-serial.log"
 
 pass_count=0
@@ -150,6 +163,46 @@ VM_PASSWORD=$( ( set +u; # shellcheck disable=SC1090
 VM_HOSTNAME=$( ( set +u; # shellcheck disable=SC1090
                  source "$CONF" 2> /dev/null; printf '%s' "${TESLAUSB_HOSTNAME:-teslausb}" ) )
 
+# --- DNS for LAN modes -----------------------------------------------------
+# A macvtap guest cannot reach its own host. If the LAN's DNS server happens to
+# be that host, the VM ends up with no resolver and DietPi's first run setup
+# gives up. Default to the LAN gateway, which is reachable either way.
+if [ -z "$VM_DNS" ] && [ "$NET_MODE" != user ]
+then
+  VM_DNS=$(ip route show default 2>/dev/null | awk '/via/ {print $3; exit}')
+  VM_DNS="${VM_DNS:-1.1.1.1}"
+  echo "   pointing the VM's DNS at $VM_DNS (override with --dns)"
+fi
+
+# --- a static address, which avoids racing DHCP ----------------------------
+# DietPi's first run setup checks connectivity before its DHCP lease
+# necessarily exists: ifupdown-wait-online completes in under two seconds while
+# dhclient starts later, so DietPi-Update can report "Network is unreachable",
+# terminate, and then wait for someone to confirm a retry on the console. A
+# static address removes the race and makes the VM's address predictable.
+DIETPI_EXTRA_KEYS=""
+if [ -n "$STATIC_IP" ]
+then
+  STATIC_GW="${STATIC_GW:-$(ip route show default | awk '/via/ {print $3; exit}')}"
+  VM_DNS="${VM_DNS:-$STATIC_GW}"
+  DIETPI_EXTRA_KEYS="AUTO_SETUP_NET_USESTATIC=1
+AUTO_SETUP_NET_STATIC_IP=$STATIC_IP
+AUTO_SETUP_NET_STATIC_MASK=$STATIC_MASK
+AUTO_SETUP_NET_STATIC_GATEWAY=$STATIC_GW
+AUTO_SETUP_NET_STATIC_DNS=$VM_DNS"
+  echo "   pinning the VM to $STATIC_IP (mask $STATIC_MASK, gateway $STATIC_GW, dns $VM_DNS)"
+fi
+
+# --- an SSH key for the checks ---------------------------------------------
+# Injected into the image, so logging in needs no password and works the same
+# whether we reach the VM directly or through a jump host.
+readonly TEST_KEY="$CACHE_DIR/teslausb-vm-key"
+mkdir -p "$CACHE_DIR"
+if [ ! -f "$TEST_KEY" ]
+then
+  ssh-keygen -q -t ed25519 -N "" -C "teslausb-vm-test" -f "$TEST_KEY"
+fi
+
 # --- image -----------------------------------------------------------------
 mkdir -p "$CACHE_DIR"
 if [ ! -s "$CACHE_DIR/$IMAGE_NAME" ]
@@ -161,12 +214,22 @@ log "verifying sha256"
 curl -fsSL --retry 3 -o "$CACHE_DIR/$IMAGE_NAME.sha256" "$BASE_URL/$IMAGE_NAME.sha256"
 ( cd "$CACHE_DIR" && sha256sum -c "$IMAGE_NAME.sha256" )
 
+if pgrep -f "[q]emu-system-x86_64.*$(basename "$VM_OVERLAY")" > /dev/null
+then
+  echo "FATAL: a VM from a previous run is still using $VM_OVERLAY." >&2
+  echo "       Stop it first: pkill -f '[q]emu-system-x86_64.*$(basename "$VM_OVERLAY")'" >&2
+  exit 1
+fi
+
 log "preparing the VM image (this is where prepare-boot-partition.sh runs)"
 docker run --rm \
   -v "$CACHE_DIR:/cache" \
   -v "$REPO:/repo:ro" \
   -e "IMAGE_NAME=$IMAGE_NAME" \
   -e "CONF=/repo/${CONF#"$REPO"/}" \
+  -e "SSH_PUBKEY=/cache/$(basename "$TEST_KEY").pub" \
+  -e "VM_DNS=$VM_DNS" \
+  -e "DIETPI_EXTRA_KEYS=$DIETPI_EXTRA_KEYS" \
   -e "HOST_UID=$(id -u)" \
   -e "HOST_GID=$(id -g)" \
   debian:bookworm-slim \
@@ -174,6 +237,10 @@ docker run --rm \
     echo "FATAL: preparing the VM image failed" >&2
     exit 1
   }
+
+# --- a throwaway overlay to boot from --------------------------------------
+rm -f "$VM_OVERLAY"
+qemu-img create -q -f qcow2 -F raw -b "$VM_IMAGE" "$VM_OVERLAY" > /dev/null
 
 # --- networking ------------------------------------------------------------
 declare -a NETDEV
@@ -191,13 +258,23 @@ case "$NET_MODE" in
     ;;
   macvtap)
     [ -n "$IFACE" ] || { echo "FATAL: --net macvtap needs --iface NAME" >&2; exit 1; }
-    # created by the caller; see the notes at the top of this file
+    [ -n "$STATIC_IP" ] && SSH_TARGET_PINNED="$STATIC_IP"
     tapdev=$(ip -brief link show type macvtap 2>/dev/null | awk '{print $1; exit}')
+    tapdev=${tapdev%%@*}
     [ -n "$tapdev" ] || { echo "FATAL: no macvtap interface found. Create one first." >&2; exit 1; }
-    tapidx=$(cat "/sys/class/net/${tapdev%@*}/ifindex")
-    NETDEV=(-netdev "tap,id=n0,fd=3" -device "virtio-net-pci,netdev=n0")
+    tapidx=$(cat "/sys/class/net/$tapdev/ifindex")
+    # The guest must use the macvtap's own MAC, otherwise the interface drops
+    # the frames it sends and the VM appears to have no network at all.
+    tapmac=$(cat "/sys/class/net/$tapdev/address")
+    [ -r "/dev/tap${tapidx}" ] && [ -w "/dev/tap${tapidx}" ] || {
+      echo "FATAL: /dev/tap${tapidx} is not accessible. It needs to be readable by you:" >&2
+      echo "         sudo chown $(id -un) /dev/tap${tapidx}" >&2
+      exit 1
+    }
+    NETDEV=(-netdev "tap,id=n0,fd=3,vhost=off" -device "virtio-net-pci,netdev=n0,mac=$tapmac")
     exec 3<>"/dev/tap${tapidx}" || { echo "FATAL: cannot open /dev/tap${tapidx}" >&2; exit 1; }
-    SSH_TARGET="$VM_HOSTNAME"
+    echo "   using $tapdev (mac $tapmac) on $IFACE"
+    SSH_TARGET="${SSH_TARGET_PINNED:-}"   # discovered from the boot log if not pinned
     SSH_ARGS=()
     ;;
   *)
@@ -211,7 +288,7 @@ qemu-system-x86_64 \
   -machine accel="$ACCEL" \
   -m 1024 \
   -smp 2 \
-  -drive "file=$VM_IMAGE,format=raw,if=virtio,cache=writeback" \
+  -drive "file=$VM_OVERLAY,format=qcow2,if=virtio,cache=writeback" \
   "${NETDEV[@]}" \
   -nographic \
   -serial "file:$SERIAL_LOG" \
@@ -236,6 +313,22 @@ do
     booted=1
     break
   fi
+  # A VM that never gets a lease will sit here until the timeout with nothing to
+  # show for it, so call it out as soon as it is obvious.
+  if [ "$waited" -ge 90 ] && [ "$NET_MODE" != user ] &&
+     grep -qc "DHCPDISCOVER" "$SERIAL_LOG" 2> /dev/null &&
+     ! grep -q "bound to\|DHCPACK" "$SERIAL_LOG" 2> /dev/null
+  then
+    echo
+    echo "FATAL: the VM is not getting a DHCP lease on $IFACE." >&2
+    echo "       Its MAC is $(cat "/sys/class/net/$tapdev/address" 2>/dev/null)." >&2
+    echo "       Recreating the macvtap gives it a fresh MAC, which usually helps:" >&2
+    echo "         sudo ip link del $tapdev" >&2
+    echo "         sudo ip link add link $IFACE name $tapdev type macvtap mode bridge" >&2
+    echo "         sudo ip link set $tapdev up" >&2
+    echo "         sudo chown \$(id -un) /dev/tap\$(cat /sys/class/net/$tapdev/ifindex)" >&2
+    break
+  fi
   sleep 10
   waited=$(( waited + 10 ))
   printf '   %ss elapsed%s\r' "$waited" "$(
@@ -243,6 +336,27 @@ do
   )"
 done
 echo
+
+# --- which address did it get? ---------------------------------------------
+# DietPi prints the address in its console banner, which is the only way to find
+# a macvtap guest from here: the host cannot reach it to ask.
+if [ -z "$SSH_TARGET" ]
+then
+  for _ in $(seq 1 30)
+  do
+    VM_IP=$(grep -ao 'IP: [0-9.]\{7,15\}' "$SERIAL_LOG" 2> /dev/null | tail -1 | awk '{print $2}')
+    [ -n "${VM_IP:-}" ] && break
+    sleep 5
+  done
+  if [ -n "${VM_IP:-}" ]
+  then
+    SSH_TARGET="$VM_IP"
+    echo "   the VM reports address $VM_IP"
+  else
+    SSH_TARGET="$VM_HOSTNAME"
+    echo "   could not find an address in the boot log, trying $VM_HOSTNAME"
+  fi
+fi
 
 # ===========================================================================
 log "checks"
@@ -264,11 +378,21 @@ else ok "DietPi did not prompt for anything"
 fi
 
 # --- checks that need to be run inside the VM ------------------------------
+# A macvtap guest cannot be reached from its own host, so the checks go through
+# another machine on the LAN when --jump-host is given. Authentication uses the
+# injected key from here, so the jump host needs no credentials of its own.
+declare -a SSH_COMMON=(
+  -i "$TEST_KEY"
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o ConnectTimeout=10
+  -o LogLevel=ERROR
+  -o IdentitiesOnly=yes
+)
+[ -n "$JUMP_HOST" ] && SSH_COMMON+=(-J "$JUMP_HOST")
+
 ssh_vm () {
-  sshpass -p "$VM_PASSWORD" ssh \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=10 -o LogLevel=ERROR \
-    "${SSH_ARGS[@]}" "root@$SSH_TARGET" "$@" 2> /dev/null
+  ssh "${SSH_COMMON[@]}" "${SSH_ARGS[@]}" "root@$SSH_TARGET" "$@" 2> /dev/null
 }
 
 log "waiting for SSH"
@@ -318,11 +442,13 @@ printf 'serial log: %s\n' "$SERIAL_LOG"
 
 if [ "$KEEP" = 1 ]
 then
+  # shellcheck disable=SC2029  # this is text for the user, not a command we run
   cat <<EOF
 
 The VM is still running (pid $QEMU_PID). To log in:
 
-  ssh ${SSH_ARGS[*]} root@$SSH_TARGET      # password: $VM_PASSWORD
+  ssh ${JUMP_HOST:+-J $JUMP_HOST} ${SSH_ARGS[*]} -i $TEST_KEY root@$SSH_TARGET
+  (or with a password: ssh ${SSH_ARGS[*]} root@$SSH_TARGET  #  $VM_PASSWORD)
 
 To watch what it is doing:
 

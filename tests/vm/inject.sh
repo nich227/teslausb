@@ -54,17 +54,56 @@ debugfs -R "dump /boot/dietpi.txt $STAGING/dietpi.txt" "$PART" 2> /dev/null
 log "running tools/prepare-boot-partition.sh"
 /repo/tools/prepare-boot-partition.sh "$STAGING" "$CONF" | sed 's/^/    /'
 
+# --- extra dietpi.txt keys for the test environment -----------------------
+# Applied after the production script has run, so the test can pin things the
+# real script has no business setting, such as a static address.
+if [ -n "${DIETPI_EXTRA_KEYS:-}" ]
+then
+  while IFS= read -r kv
+  do
+    [ -n "$kv" ] || continue
+    key=${kv%%=*}
+    log "dietpi.txt: $kv"
+    if grep -q "^${key}=" "$STAGING/dietpi.txt"
+    then
+      sed -i "s|^${key}=.*|${kv}|" "$STAGING/dietpi.txt"
+    else
+      printf '%s\n' "$kv" >> "$STAGING/dietpi.txt"
+    fi
+  done <<< "$DIETPI_EXTRA_KEYS"
+fi
+
 # --- a serial console, so the harness can watch the boot ------------------
 # The DietPi VM image boots to a graphical console only.
 log "adding a serial console to grub.cfg"
 debugfs -R "dump /boot/grub/grub.cfg $STAGING/grub.cfg" "$PART" 2> /dev/null
-sed -i 's|\(^[[:blank:]]*linux[[:blank:]]\+/boot/vmlinuz[^\n]*\)|\1 console=tty0 console=ttyS0,115200|' \
+sed -i 's|\(^[[:blank:]]*linux[[:blank:]]\+/boot/vmlinuz[^\n]*\)|\1 console=ttyS0,115200|' \
   "$STAGING/grub.cfg"
 if ! grep -q 'serial --unit=0' "$STAGING/grub.cfg"
 then
   sed -i '1i serial --unit=0 --speed=115200\nterminal_input --append serial\nterminal_output --append serial' \
     "$STAGING/grub.cfg"
 fi
+
+# Make the serial console survive DietPi regenerating grub.cfg.
+#
+# DietPi's first run setup upgrades the kernel, which runs update-grub and
+# rewrites grub.cfg from /etc/default/grub, discarding the patch above. The boot
+# then goes back to the graphical console and the harness goes blind exactly when
+# the interesting part starts, so set it in the file update-grub reads from too.
+log "persisting the serial console in /etc/default/grub"
+debugfs -R "dump /etc/default/grub $STAGING/grub.default" "$PART" 2> /dev/null || : > "$STAGING/grub.default"
+grep -vE '^[[:blank:]]*(GRUB_CMDLINE_LINUX|GRUB_TERMINAL|GRUB_SERIAL_COMMAND|GRUB_TIMEOUT)=' \
+  "$STAGING/grub.default" > "$STAGING/grub.default.new" || true
+cat >> "$STAGING/grub.default.new" <<'EOF'
+# added by the teslausb VM test: keep a serial console across kernel upgrades
+GRUB_CMDLINE_LINUX="console=ttyS0,115200"
+GRUB_TERMINAL="serial console"
+GRUB_SERIAL_COMMAND="serial --unit=0 --speed=115200"
+GRUB_TIMEOUT=2
+EOF
+debugfs -w -R "rm /etc/default/grub" "$PART" &> /dev/null || true
+debugfs -w -R "write $STAGING/grub.default.new /etc/default/grub" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
 
 # --- write everything back ------------------------------------------------
 write_file () {
@@ -100,6 +139,112 @@ do
   debugfs -w -R "rm /boot/teslausb-local/$(basename "$f")" "$PART" &> /dev/null || true
   debugfs -w -R "write $f /boot/teslausb-local/$(basename "$f")" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
 done
+
+# DNS override.
+#
+# Needed for macvtap: a macvtap guest cannot talk to its own host, so if the LAN
+# hands out that host as the DNS server (a Pi-hole or similar), the VM has no
+# working resolver and DietPi's first run setup gives up. Superseding the option
+# in dhclient.conf keeps DHCP for everything else.
+if [ -n "${VM_DNS:-}" ]
+then
+  log "pointing DNS at $VM_DNS"
+  debugfs -R "dump /etc/dhcp/dhclient.conf $STAGING/dhclient.conf" "$PART" 2> /dev/null
+  {
+    echo
+    echo "# added by the teslausb VM test: see tests/vm/inject.sh"
+    echo "supersede domain-name-servers ${VM_DNS};"
+  } >> "$STAGING/dhclient.conf"
+  debugfs -w -R "rm /etc/dhcp/dhclient.conf" "$PART" &> /dev/null || true
+  debugfs -w -R "write $STAGING/dhclient.conf /etc/dhcp/dhclient.conf" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+  # and a resolv.conf for the window before dhclient runs
+  printf 'nameserver %s\n' "${VM_DNS%%,*}" > "$STAGING/resolv.conf"
+  debugfs -w -R "rm /etc/resolv.conf" "$PART" &> /dev/null || true
+  debugfs -w -R "write $STAGING/resolv.conf /etc/resolv.conf" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+fi
+
+# Make the first boot wait for the network.
+#
+# dietpi.txt ships AUTO_SETUP_BOOT_WAIT_FOR_NETWORK=1, but the service that
+# implements it (ifupdown-wait-online) is only enabled once DietPi's first run
+# setup has completed, so the very first boot can race its own DHCP lease. When
+# it loses, DietPi-Update reports "Network is unreachable", terminates, and waits
+# for someone to confirm a retry on the console, which is fatal for an unattended
+# install. Enabling it up front makes the boot deterministic.
+log "enabling ifupdown-wait-online for the first boot"
+debugfs -w -R "mkdir /etc/systemd/system/network-online.target.wants" "$PART" &> /dev/null || true
+debugfs -w -R "symlink /etc/systemd/system/network-online.target.wants/ifupdown-wait-online.service /lib/systemd/system/ifupdown-wait-online.service" "$PART" &> /dev/null || true
+
+# Hold DietPi's first run setup until the network genuinely works.
+#
+# DietPi-Update's first action is 'ping -4nc 1 -W 10 9.9.9.9', and it terminates
+# if that fails. ifupdown-wait-online finishes in under two seconds while
+# dhclient does not start until around four, so on a fast boot DietPi loses the
+# race, gives up, and then waits for someone to confirm a retry on the console.
+# Gate the autologin console, which is where first run setup runs, on real
+# connectivity rather than on systemd's idea of it.
+log "making the first run setup wait for working connectivity"
+cat > "$STAGING/wait-network.conf" <<'EOF'
+[Service]
+ExecStartPre=/bin/sh -c 'i=0; until ping -4nc1 -W2 9.9.9.9 >/dev/null 2>&1 || [ $i -ge 60 ]; do i=$((i+1)); sleep 2; done'
+TimeoutStartSec=300
+EOF
+for d in /etc/systemd/system/getty@tty1.service.d /etc/systemd/system/serial-getty@ttyS0.service.d
+do
+  debugfs -w -R "mkdir $d" "$PART" &> /dev/null || true
+  debugfs -w -R "rm $d/zz-wait-network.conf" "$PART" &> /dev/null || true
+  debugfs -w -R "write $STAGING/wait-network.conf $d/zz-wait-network.conf" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+done
+
+# DietPi runs its first run setup on an autologin console, which is tty1 by
+# default and therefore invisible to the harness. Give it an autologin serial
+# console instead, so everything it does, including any prompt it would wait on,
+# lands in the serial log.
+log "putting the DietPi console on serial"
+cat > "$STAGING/autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I 115200,38400,9600 vt100
+EOF
+debugfs -w -R "mkdir /etc/systemd/system/serial-getty@ttyS0.service.d" "$PART" &> /dev/null || true
+debugfs -w -R "rm /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" "$PART" &> /dev/null || true
+debugfs -w -R "write $STAGING/autologin.conf /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+debugfs -w -R "mkdir /etc/systemd/system/getty.target.wants" "$PART" &> /dev/null || true
+debugfs -w -R "symlink /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service /lib/systemd/system/serial-getty@.service" "$PART" &> /dev/null || true
+
+# Skip DietPi's own update phase.
+#
+# dietpi-login runs three phases: update (install stage 0), then software
+# (stage 1, which runs Automation_Custom_Script.sh), then finished (stage 2).
+# The update phase begins with 'ping -4nc 1 -W 10 9.9.9.9' and terminates the
+# whole first run if that fails, which it does on a fast VM boot before the DHCP
+# lease exists. That is DietPi's updater, not teslausb, and it is not what this
+# test is for: start at stage 1 so the boot goes straight to the phase that runs
+# the teslausb bootstrap.
+if [ "${SKIP_DIETPI_UPDATE:-1}" = 1 ]
+then
+  log "starting at install stage 1, skipping DietPi's update phase"
+  printf '1' > "$STAGING/install_stage"
+  debugfs -w -R "rm /boot/dietpi/.install_stage" "$PART" &> /dev/null || true
+  debugfs -w -R "write $STAGING/install_stage /boot/dietpi/.install_stage" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+fi
+
+# An SSH key for root, so the checks can log in without a password. Dropbear,
+# which is what DietPi installs by default, reads /root/.ssh/authorized_keys and
+# insists on tight permissions.
+if [ -n "${SSH_PUBKEY:-}" ] && [ -f "$SSH_PUBKEY" ]
+then
+  log "installing an SSH key for root"
+  debugfs -w -R "mkdir /root/.ssh" "$PART" &> /dev/null || true
+  debugfs -w -R "rm /root/.ssh/authorized_keys" "$PART" &> /dev/null || true
+  debugfs -w -R "write $SSH_PUBKEY /root/.ssh/authorized_keys" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+  debugfs -w -R "sif /root/.ssh mode 040700" "$PART" &> /dev/null || true
+  debugfs -w -R "sif /root/.ssh uid 0" "$PART" &> /dev/null || true
+  debugfs -w -R "sif /root/.ssh gid 0" "$PART" &> /dev/null || true
+  debugfs -w -R "sif /root/.ssh/authorized_keys mode 0100600" "$PART" &> /dev/null || true
+  debugfs -w -R "sif /root/.ssh/authorized_keys uid 0" "$PART" &> /dev/null || true
+  debugfs -w -R "sif /root/.ssh/authorized_keys gid 0" "$PART" &> /dev/null || true
+fi
 
 e2fsck -fp "$PART" > /dev/null 2>&1 || true
 
