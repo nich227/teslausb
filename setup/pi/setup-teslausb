@@ -472,6 +472,57 @@ readonly TESLAUSB_PACKAGES=(
 # keep AP_SSID working the same way on DietPi, hand networking over to
 # NetworkManager once, carrying the wifi credentials across so the device does
 # not lose its connection, then reboot into it.
+function package_installed () {
+  dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q "install ok installed"
+}
+
+# DietPi ships Dropbear as its ssh server. teslausb standardises on OpenSSH:
+# the rsync archive backend shells out to ssh, and Dropbear provides dbclient
+# rather than ssh, ssh-keygen and ssh-keyscan, so archiving fails outright with
+# "ssh: command not found". One implementation also means one server config and
+# one set of host keys to reason about.
+function ensure_openssh () {
+  if package_installed openssh-server && ! package_installed dropbear-bin
+  then
+    setup_progress "openssh is already the only ssh server"
+    return 0
+  fi
+
+  setup_progress "making openssh the ssh server in place of dropbear"
+
+  # Prefer DietPi's own tooling so its software inventory stays truthful and a
+  # later dietpi-software run does not put Dropbear back. 105 is OpenSSH Server,
+  # 104 is Dropbear. It refuses to run while another instance is active, which is
+  # the case during first boot, hence the check.
+  if [ -x /boot/dietpi/dietpi-software ] && ! pgrep -f '/boot/dietpi/dietpi-software' > /dev/null
+  then
+    # stdin from /dev/null: setup runs unattended from a systemd unit, and a tool
+    # that decides to ask a question must not be able to stall it forever.
+    /boot/dietpi/dietpi-software install 105 < /dev/null &> /dev/null || true
+    /boot/dietpi/dietpi-software uninstall 104 < /dev/null &> /dev/null || true
+  fi
+
+  # Then make sure of the end state regardless of what DietPi managed. Dropbear
+  # has to release port 22 before openssh can bind it.
+  systemctl disable --now dropbear &> /dev/null || true
+  if ! package_installed openssh-server
+  then
+    apt-get -y --no-install-recommends install openssh-server
+  fi
+  apt-get -y purge dropbear dropbear-run dropbear-bin &> /dev/null || true
+
+  systemctl enable ssh &> /dev/null || true
+  systemctl restart ssh &> /dev/null || true
+
+  if package_installed openssh-server
+  then
+    setup_progress "openssh is installed and dropbear is gone"
+  else
+    setup_progress "STOP: could not install openssh-server"
+    exit 1
+  fi
+}
+
 function ensure_networkmanager_for_ap () {
   if systemctl -q is-enabled NetworkManager.service 2> /dev/null
   then
@@ -1085,6 +1136,7 @@ fi
 update_package_index
 
 install_base_packages
+ensure_openssh
 
 # set time zone so we get decent timestamps in the rest of the setup log
 set_timezone

@@ -124,17 +124,16 @@ fi
 # Mind the values, which are not intuitive: 0 means none/custom, -1 is Dropbear
 # and -2 is OpenSSH. DietPi images ship with 0, so an unattended first boot
 # actually REMOVES the pre-installed Dropbear and leaves the device unreachable.
-# Ask for OpenSSH unless a real server has already been chosen.
+#
+# teslausb asks for OpenSSH, always. Its rsync archive backend shells out to ssh,
+# which Dropbear does not provide, so Dropbear is not a working choice here even
+# though DietPi recommends it.
 ssh_index=$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' "$BOOT/dietpi.txt")
-case "$ssh_index" in
-  -1|-2)
-    log "dietpi.txt: leaving AUTO_SETUP_SSH_SERVER_INDEX as it is ($ssh_index)"
-    ;;
-  *)
-    # 0, missing, or anything unexpected: no SSH server would be installed
-    set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX -2
-    ;;
-esac
+if [ "$ssh_index" = -1 ]
+then
+  log "dietpi.txt: asking for OpenSSH instead of Dropbear, which cannot serve the rsync archive path"
+fi
+set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX -2
 
 # ---------------------------------------------------------------------------
 # Wifi, if the config asks for it. This is what makes a wifi-only board work on

@@ -20,8 +20,11 @@ AUTO_SETUP_AUTOMATED=1
 AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1
 
 # teslausb needs SSH to be reachable for anything other than a fully automatic
-# install. 0 is Dropbear, which is fine; -1 disables SSH entirely, which is not.
-AUTO_SETUP_SSH_SERVER_INDEX=0
+# install, and a device that lives in a car has no other way in. The values are
+# not intuitive: 0 means none/custom, -1 is Dropbear, -2 is OpenSSH. teslausb
+# wants OpenSSH, because its rsync archive backend shells out to ssh and Dropbear
+# ships dbclient instead.
+AUTO_SETUP_SSH_SERVER_INDEX=-2
 
 # Change this. It is the root and dietpi user password.
 AUTO_SETUP_GLOBAL_PASSWORD=dietpi

@@ -974,14 +974,17 @@ run_prepare /tmp/bootfs /tmp/my.conf
 assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
   "-2" "SSH server index added"
 
-start_case "a real SSH server the user chose is left alone"
+start_case "OpenSSH is asked for whatever the image or the user said"
+# teslausb standardises on OpenSSH. Dropbear (-1) is not a working choice here,
+# because the rsync archive backend shells out to ssh and dropbear ships dbclient
+# instead, so a dropbear request is overridden rather than honoured.
 for chosen in -1 -2
 do
   fake_boot_partition
   sed -i "s/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=$chosen/" /tmp/bootfs/dietpi.txt
   run_prepare /tmp/bootfs /tmp/my.conf
   assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
-    "$chosen" "kept the user's choice of $chosen"
+    "-2" "asked for OpenSSH when the image said $chosen"
 done
 
 start_case "existing dietpi.txt settings are preserved"
@@ -1684,6 +1687,100 @@ assert_no_file /tmp/reboot.calls "no reboot"
 assert_eq "$WD_RC" 1 "exit status 1"
 assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
+
+# ===========================================================================
+banner "openssh replaces dropbear"
+# ===========================================================================
+# DietPi ships dropbear. teslausb needs OpenSSH, because its rsync archive backend
+# shells out to ssh and dropbear provides dbclient instead.
+openssh_fn=$(sed -n '/^function package_installed/,/^}/p;/^function ensure_openssh/,/^}/p' \
+  "$REPO/setup/pi/setup-teslausb")
+
+run_ensure_openssh () {
+  # $1: openssh-server installed already, $2: dropbear-bin installed already
+  rm -f /tmp/apt.calls /tmp/systemctl.calls /tmp/dietpi-software.calls /tmp/openssh.progress \
+        /tmp/openssh.installed /tmp/dropbear.purged
+  # The stubs carry state, so the function sees the world change as it acts: after
+  # it installs openssh-server, dpkg-query reports it installed. $3 = "fail" makes
+  # the install fail, to exercise the give-up path.
+  cat > "$STUBS/dpkg-query" <<EOF
+#!/bin/bash
+case "\$*" in
+  *openssh-server*)
+    if [ "$1" = yes ] || [ -f /tmp/openssh.installed ]
+    then echo "install ok installed"
+    else echo "unknown ok not-installed"
+    fi
+    ;;
+  *dropbear-bin*)
+    if [ "$2" = yes ] && [ ! -f /tmp/dropbear.purged ]
+    then echo "install ok installed"
+    else echo "unknown ok not-installed"
+    fi
+    ;;
+  *) echo "unknown ok not-installed" ;;
+esac
+exit 0
+EOF
+  cat > "$STUBS/apt-get" <<EOF
+#!/bin/bash
+echo "apt-get \$*" >> /tmp/apt.calls
+case "\$*" in
+  *"install openssh-server"*) [ "${3:-}" = fail ] || touch /tmp/openssh.installed ;;
+  *"purge dropbear"*)         touch /tmp/dropbear.purged ;;
+esac
+exit 0
+EOF
+  printf '#!/bin/bash\necho "systemctl $*" >> /tmp/systemctl.calls\nexit 0\n' > "$STUBS/systemctl"
+  printf '#!/bin/bash\nexit 1\n' > "$STUBS/pgrep"
+  # The container has a DietPi layout, so ensure_openssh finds dietpi-software and
+  # calls it. Stub it, both to record the call and to keep the real one from
+  # waiting on input.
+  mkdir -p /boot/dietpi
+  printf '#!/bin/bash\necho "dietpi-software $*" >> /tmp/dietpi-software.calls\nexit 0\n' > /boot/dietpi/dietpi-software
+  chmod +x /boot/dietpi/dietpi-software
+  chmod +x "$STUBS/dpkg-query" "$STUBS/apt-get" "$STUBS/systemctl" "$STUBS/pgrep"
+  (
+    # called by the extracted function, which shellcheck cannot see
+    # shellcheck disable=SC2329
+    setup_progress () { echo "$*" >> /tmp/openssh.progress; }
+    eval "$openssh_fn"
+    ensure_openssh
+  ) && ENSURE_RC=0 || ENSURE_RC=$?
+  rm -f "$STUBS/dpkg-query" "$STUBS/pgrep"
+}
+
+start_case "dropbear is replaced when it is the installed server"
+run_ensure_openssh no yes
+assert_eq "$ENSURE_RC" 0 "exits 0"
+assert_grep "install openssh-server" /tmp/apt.calls "installs openssh-server"
+assert_grep "purge dropbear" /tmp/apt.calls "purges dropbear"
+assert_grep "disable --now dropbear" /tmp/systemctl.calls "stops dropbear before openssh binds port 22"
+assert_grep "enable ssh" /tmp/systemctl.calls "enables the openssh service"
+assert_grep "in place of dropbear" /tmp/openssh.progress "says what it is doing"
+assert_grep "install 105" /tmp/dietpi-software.calls "asks DietPi for OpenSSH (105)"
+assert_grep "uninstall 104" /tmp/dietpi-software.calls "and tells it dropbear (104) is gone"
+
+start_case "and it does nothing when openssh is already alone"
+run_ensure_openssh yes no
+assert_eq "$ENSURE_RC" 0 "exits 0"
+assert_no_file /tmp/apt.calls "installs nothing"
+assert_grep "already the only ssh server" /tmp/openssh.progress "says so"
+
+start_case "openssh is still ensured when both are installed"
+run_ensure_openssh yes yes
+assert_grep "purge dropbear" /tmp/apt.calls "purges dropbear"
+
+start_case "it gives up loudly if openssh cannot be installed"
+run_ensure_openssh no yes fail
+assert_eq "$ENSURE_RC" 1 "exits 1 rather than carrying on without an ssh server"
+assert_grep "STOP: could not install openssh-server" /tmp/openssh.progress "says why"
+
+start_case "the boot partition asks DietPi for openssh, never dropbear"
+assert_grep "set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX -2" "$REPO/tools/prepare-boot-partition.sh" \
+  "forces the OpenSSH index"
+assert_eq "$(grep -c 'AUTO_SETUP_SSH_SERVER_INDEX=-2' "$REPO/dietpi/dietpi.txt.sample")" 1 \
+  "and the shipped sample asks for it too"
 
 # ===========================================================================
 banner "the package list covers what DietPi does not ship"
