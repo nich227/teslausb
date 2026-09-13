@@ -18,7 +18,7 @@ set -euo pipefail
 
 : "${IMAGE_NAME:?}"
 : "${CONF:=/repo/tests/vm/vm-test.conf}"
-: "${GROW_GB:=8}"
+: "${GROW_GB:=40}"   # teslausb requires 32GiB of free space for backingfiles
 
 readonly WORK=/tmp/work.img
 readonly PART=/tmp/root.img
@@ -33,7 +33,11 @@ log "decompressing $IMAGE_NAME"
 xz -dc "/cache/$IMAGE_NAME" > "$WORK"
 
 # Room for the backing files partition teslausb creates later.
-log "growing the image by ${GROW_GB}G"
+#
+# verify-configuration.sh refuses to proceed with less than 32GiB unpartitioned
+# ("STOP: The MicroSD card is too small"), so the disk has to be genuinely that
+# big. The file stays sparse, so it costs little real space.
+log "growing the image by ${GROW_GB}G (sparse)"
 truncate -s "+${GROW_GB}G" "$WORK"
 
 # --- give the root filesystem a workable size, and leave the rest free -----

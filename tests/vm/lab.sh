@@ -364,20 +364,71 @@ set_login_shell () {
   step "$where now logs in with $("$runner" 'getent passwd root | cut -d: -f7')"
 }
 
+# The device's teslausb setup reaches its archive check on its own schedule, and
+# if the share is not serving by then it gives up with "no working combination
+# of vers and sec". So the share is set up before the device is nudged into
+# starting setup at all.
+setup_archive_share () {
+  # ---------------------------------------------------------------------------
+  on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq update" > /dev/null
+  case "$ARCHIVE" in
+    cifs)
+      on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install samba avahi-daemon libnss-mdns curl" > /dev/null
+      on_nas "mkdir -p /srv/$SHARE_NAME && chmod 777 /srv/$SHARE_NAME"
+      on_nas "id $SHARE_USER || useradd -M -s /usr/sbin/nologin $SHARE_USER"
+      on_nas "printf '%s\n%s\n' '$SHARE_PASS' '$SHARE_PASS' | smbpasswd -s -a $SHARE_USER"
+      on_nas "cat >> /etc/samba/smb.conf <<'EOF'
+  [$SHARE_NAME]
+     path = /srv/$SHARE_NAME
+     browseable = yes
+     read only = no
+     guest ok = no
+     valid users = $SHARE_USER
+  EOF"
+      on_nas "systemctl restart smbd"
+      if [ "$(on_nas "systemctl is-active smbd")" = active ]
+      then ok "the NAS is serving an SMB share"
+      else not_ok "smbd is not running on the NAS"
+      fi
+      ;;
+    rsync)
+      on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install rsync avahi-daemon libnss-mdns curl" > /dev/null
+      on_nas "mkdir -p /srv/$SHARE_NAME && chmod 777 /srv/$SHARE_NAME"
+      on_nas "cat > /etc/rsyncd.conf <<'EOF'
+  [$SHARE_NAME]
+     path = /srv/$SHARE_NAME
+     read only = false
+     auth users = $SHARE_USER
+     secrets file = /etc/rsyncd.secrets
+  EOF"
+      on_nas "printf '%s:%s\n' '$SHARE_USER' '$SHARE_PASS' > /etc/rsyncd.secrets && chmod 600 /etc/rsyncd.secrets"
+      on_nas "systemctl enable --now rsync"
+      if [ "$(on_nas "systemctl is-active rsync")" = active ]
+      then ok "the NAS is serving an rsync module"
+      else not_ok "rsyncd is not running on the NAS"
+      fi
+      ;;
+  esac
+
+}
+
 log "waiting for both VMs to answer (up to ${TIMEOUT}s)"
 wait_for nas 120 || { echo "FATAL: the NAS never came up; see $RUN_DIR/nas-serial.log" >&2; exit 1; }
 ok "the NAS is up"
+
+log "setting up the archive share on the NAS, before the device needs it"
+advance_first_run nas || step "the NAS did not reach install stage 2; carrying on"
+[ "$LOGIN_SHELL" != bash ] && set_login_shell nas "$LOGIN_SHELL"
+setup_archive_share
 wait_for device 120 || { echo "FATAL: the device never came up; see $RUN_DIR/device-serial.log" >&2; exit 1; }
 ok "the device is up"
 
-log "letting DietPi finish its own setup on both"
-advance_first_run nas || step "the NAS did not reach install stage 2; carrying on"
+log "letting DietPi finish its own setup on the device"
 advance_first_run device || step "the device did not reach install stage 2; carrying on"
 
 if [ "$LOGIN_SHELL" != bash ]
 then
-  log "setting the login shell to $LOGIN_SHELL on both VMs"
-  set_login_shell nas "$LOGIN_SHELL"
+  log "setting the login shell to $LOGIN_SHELL on the device"
   set_login_shell device "$LOGIN_SHELL"
 fi
 
@@ -392,49 +443,6 @@ if [ "$(on_device "ip -brief addr show eth1 | grep -c $DEVICE_IP")" = 1 ]
 then ok "the device has its private address"
 else not_ok "the device is missing its private address"
 fi
-
-# ---------------------------------------------------------------------------
-log "setting up the archive share on the NAS"
-# ---------------------------------------------------------------------------
-on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq update" > /dev/null
-case "$ARCHIVE" in
-  cifs)
-    on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install samba avahi-daemon libnss-mdns curl" > /dev/null
-    on_nas "mkdir -p /srv/$SHARE_NAME && chmod 777 /srv/$SHARE_NAME"
-    on_nas "id $SHARE_USER || useradd -M -s /usr/sbin/nologin $SHARE_USER"
-    on_nas "printf '%s\n%s\n' '$SHARE_PASS' '$SHARE_PASS' | smbpasswd -s -a $SHARE_USER"
-    on_nas "cat >> /etc/samba/smb.conf <<'EOF'
-[$SHARE_NAME]
-   path = /srv/$SHARE_NAME
-   browseable = yes
-   read only = no
-   guest ok = no
-   valid users = $SHARE_USER
-EOF"
-    on_nas "systemctl restart smbd"
-    if [ "$(on_nas "systemctl is-active smbd")" = active ]
-    then ok "the NAS is serving an SMB share"
-    else not_ok "smbd is not running on the NAS"
-    fi
-    ;;
-  rsync)
-    on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install rsync avahi-daemon libnss-mdns curl" > /dev/null
-    on_nas "mkdir -p /srv/$SHARE_NAME && chmod 777 /srv/$SHARE_NAME"
-    on_nas "cat > /etc/rsyncd.conf <<'EOF'
-[$SHARE_NAME]
-   path = /srv/$SHARE_NAME
-   read only = false
-   auth users = $SHARE_USER
-   secrets file = /etc/rsyncd.secrets
-EOF"
-    on_nas "printf '%s:%s\n' '$SHARE_USER' '$SHARE_PASS' > /etc/rsyncd.secrets && chmod 600 /etc/rsyncd.secrets"
-    on_nas "systemctl enable --now rsync"
-    if [ "$(on_nas "systemctl is-active rsync")" = active ]
-    then ok "the NAS is serving an rsync module"
-    else not_ok "rsyncd is not running on the NAS"
-    fi
-    ;;
-esac
 
 # ---------------------------------------------------------------------------
 log "what the NAS can see of the device"
@@ -494,8 +502,28 @@ if [ "$setup_done" = 1 ]
 then
   ok "teslausb setup finished"
 else
-  not_ok "teslausb setup did not finish; skipping the archive checks"
-  printf '   last log line: %s\n' "$(on_device 'tail -1 /boot/teslausb-headless-setup.log' | cut -c1-100)"
+  printf '   setup has not finished; last log line: %s\n' \
+    "$(on_device 'tail -1 /boot/teslausb-headless-setup.log' | cut -c1-100)"
+  # If it gave up on the archive, the share may simply not have been serving yet.
+  if on_device "grep -q 'no working combination' /boot/teslausb-headless-setup.log"
+  then
+    step "it gave up on the archive; the share is serving now, so running setup again"
+    on_device "nohup /root/bin/setup-teslausb > /tmp/setup-retry.log 2>&1 &" > /dev/null
+    for (( i = 0; i < 80; i++ ))
+    do
+      sleep 15
+      wait_for device 12 || continue
+      if [ "$(on_device 'test -e /boot/TESLAUSB_SETUP_FINISHED && echo yes')" = yes ]
+      then
+        setup_done=1
+        break
+      fi
+    done
+  fi
+  if [ "$setup_done" = 1 ]
+  then ok "teslausb setup finished on the second attempt"
+  else not_ok "teslausb setup did not finish; skipping the archive checks"
+  fi
 fi
 
 if [ "$setup_done" = 1 ]
