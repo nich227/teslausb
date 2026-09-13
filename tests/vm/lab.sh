@@ -25,6 +25,7 @@
 #
 # Usage:
 #   tests/vm/lab.sh [--keep] [--archive cifs|rsync] [--timeout SECONDS]
+#                   [--dietpi-update] [--start-dropbear]
 #
 # Nothing here needs root on the host.
 
@@ -51,6 +52,12 @@ do
     --archive)  ARCHIVE="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
     --distro)   DISTRO="$2"; shift 2 ;;
+    # DietPi's own apt upgrade is skipped by default, which is where most of a run
+    # used to go. This puts it back, for a run that covers the update path too.
+    --dietpi-update) DIETPI_UPDATE=1; shift ;;
+    # Boot the device with dropbear, as a stock DietPi image does, so teslausb has
+    # to replace it with openssh rather than DietPi installing openssh up front.
+    --start-dropbear) START_DROPBEAR=1; shift ;;
     -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
     *)          echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -187,6 +194,13 @@ prepare_vm () {
   local role="$1" ip="$2" conf="$3" out="$4"
   # the NAS is a plain DietPi with a share on it, not a second teslausb
   local bootstrap=1 hostname_key="AUTO_SETUP_NET_HOSTNAME=teslausb"
+  if [ "${START_DROPBEAR:-0}" = 1 ]
+  then
+    # -1 is Dropbear. teslausb's ensure_openssh is then the thing that has to
+    # swap it for openssh, which is what the assertions later check.
+    hostname_key="$hostname_key
+AUTO_SETUP_SSH_SERVER_INDEX=-1"
+  fi
   if [ "$role" = nas ]
   then
     bootstrap=0
@@ -213,6 +227,7 @@ EOF
     -e "TESLAUSB_BOOTSTRAP=$bootstrap" \
     -e "VM_PASSWORD=$VM_PASSWORD" \
     -e "DIETPI_EXTRA_KEYS=$hostname_key" \
+    -e "SKIP_DIETPI_UPDATE=$(( 1 - ${DIETPI_UPDATE:-0} ))" \
     -e "OUT_IMAGE=/cache/$(basename "$out")" \
     -e "HOST_UID=$(id -u)" \
     -e "HOST_GID=$(id -g)" \
@@ -225,6 +240,14 @@ EOF
 }
 
 readonly DEVICE_IMG="$CACHE_DIR/lab-device.img"
+
+if [ "${DIETPI_UPDATE:-0}" = 1 ]
+then step "DietPi's own apt upgrade is included in this run, which is slow but covers it"
+else step "DietPi's own apt upgrade is skipped; use --dietpi-update to include it"
+fi
+if [ "${START_DROPBEAR:-0}" = 1 ]
+then step "the device starts with dropbear, so teslausb has to replace it"
+fi
 
 log "preparing the device image"
 prepare_vm device "$DEVICE_IP" "/run-dir/$(basename "$LAB_CONF")" "$DEVICE_IMG"
@@ -468,8 +491,18 @@ fi
 # ---------------------------------------------------------------------------
 log "what the NAS can see of the device"
 # ---------------------------------------------------------------------------
-# This is the check a person on the same network would make.
-mdns=$(on_nas "getent hosts teslausb.local | awk '{print \$1}'")
+# This is the check a person on the same network would make. Avahi registers
+# asynchronously, and the device is still going through setup here, so give the
+# name a while to appear rather than asking once. A run where the device had to
+# swap dropbear for openssh reported both of these as failures purely because it
+# was asked thirty seconds too early.
+mdns=""
+for (( i = 0; i < 30; i++ ))
+do
+  mdns=$(on_nas "getent hosts teslausb.local | awk '{print \$1}'")
+  [ -n "$mdns" ] && break
+  sleep 10
+done
 if [ -n "$mdns" ]
 then
   ok "teslausb.local resolves from the NAS (to $mdns)"
@@ -481,7 +514,17 @@ else
   not_ok "teslausb.local does not resolve from the NAS"
 fi
 
-if [ "$(on_nas "ping -c1 -W3 teslausb.local > /dev/null 2>&1 && echo yes")" = yes ]
+pinged=no
+for (( i = 0; i < 12; i++ ))
+do
+  if [ "$(on_nas "ping -c1 -W3 teslausb.local > /dev/null 2>&1 && echo yes")" = yes ]
+  then
+    pinged=yes
+    break
+  fi
+  sleep 10
+done
+if [ "$pinged" = yes ]
 then ok "teslausb.local answers a ping from the NAS"
 else not_ok "teslausb.local does not answer from the NAS"
 fi
