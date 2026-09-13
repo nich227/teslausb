@@ -18,7 +18,7 @@ set -euo pipefail
 
 : "${IMAGE_NAME:?}"
 : "${CONF:=/repo/tests/vm/vm-test.conf}"
-: "${GROW_GB:=4}"
+: "${GROW_GB:=8}"
 
 readonly WORK=/tmp/work.img
 readonly PART=/tmp/root.img
@@ -35,6 +35,29 @@ xz -dc "/cache/$IMAGE_NAME" > "$WORK"
 # Room for the backing files partition teslausb creates later.
 log "growing the image by ${GROW_GB}G"
 truncate -s "+${GROW_GB}G" "$WORK"
+
+# --- give the root filesystem a workable size, and leave the rest free -----
+#
+# Two constraints pull against each other. DietPi expands the root partition over
+# the whole disk on first boot, which leaves teslausb no room for the
+# backingfiles partition; but the image's native 1G root is too small for
+# DietPi's own first run, which does a full apt upgrade and ran out of space at
+# 87MB free. So size the root deliberately here, before first boot, and leave the
+# remainder for teslausb.
+if [ "${ROOT_SIZE_GB:-3}" != 0 ]
+then
+  log "growing the root partition to ${ROOT_SIZE_GB:-3}G, leaving the rest for teslausb"
+  start=$(sfdisk -d "$WORK" | sed -n 's/.*start=[[:blank:]]*\([0-9][0-9]*\).*type=83.*/\1/p' | head -1)
+  sectors=$(( ${ROOT_SIZE_GB:-3} * 1024 * 1024 * 2 ))
+  printf '%s,%s\n' "$start" "$sectors" | sfdisk --force -N1 "$WORK" > /dev/null 2>&1 || \
+    log "WARNING: could not resize the root partition"
+  # grow the filesystem to match, offline
+  dd if="$WORK" of=/tmp/rootgrow.img bs=512 skip="$start" count="$sectors" status=none
+  e2fsck -fp /tmp/rootgrow.img > /dev/null 2>&1 || true
+  resize2fs /tmp/rootgrow.img > /dev/null 2>&1 || log "WARNING: resize2fs failed"
+  dd if=/tmp/rootgrow.img of="$WORK" bs=512 seek="$start" conv=notrunc status=none
+  rm -f /tmp/rootgrow.img
+fi
 
 # --- carve out the root partition -----------------------------------------
 start=$(sfdisk -d "$WORK" | sed -n 's/.*start=[[:blank:]]*\([0-9][0-9]*\).*type=83.*/\1/p' | head -1)
@@ -247,6 +270,22 @@ debugfs -w -R "symlink /etc/systemd/system/getty.target.wants/serial-getty@ttyS0
 # /etc/bashrc.d/dietpi.bash, which calls dietpi-login for any interactive login
 # shell, and the image autologs into tty1 to make that happen. Masking tty1
 # stops first run setup dead.
+
+# Stop DietPi expanding the root partition over the free space.
+#
+# DietPi grows the root partition to fill the disk on first boot, which leaves
+# teslausb nothing to carve the backingfiles partition out of: setup gets as far
+# as printing a partition table with a single partition and can go no further.
+# The marker below is DietPi's own mechanism for "the partition table is already
+# how I want it", so the filesystem expansion becomes a no-op and the free space
+# survives.
+if [ "${SKIP_DIETPI_RESIZE:-1}" = 1 ]
+then
+  log "keeping DietPi from expanding the root partition over the free space"
+  : > "$STAGING/skip_partition_resize"
+  debugfs -w -R "rm /dietpi_skip_partition_resize" "$PART" &> /dev/null || true
+  debugfs -w -R "write $STAGING/skip_partition_resize /dietpi_skip_partition_resize" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+fi
 
 # Ask DietPi for OpenSSH.
 #

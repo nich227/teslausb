@@ -473,6 +473,108 @@ case "$http_code" in
 esac
 
 # ---------------------------------------------------------------------------
+log "waiting for teslausb setup to finish on the device"
+# ---------------------------------------------------------------------------
+# Setup partitions the disk, builds the backing files and configures the archive,
+# so nothing below can be tested until it has run to the end. It reboots on the
+# way, hence the reconnects.
+setup_done=0
+for (( i = 0; i < 100; i++ ))
+do
+  wait_for device 12 || continue
+  if [ "$(on_device 'test -e /boot/TESLAUSB_SETUP_FINISHED && echo yes')" = yes ]
+  then
+    setup_done=1
+    break
+  fi
+  sleep 15
+done
+
+if [ "$setup_done" = 1 ]
+then
+  ok "teslausb setup finished"
+else
+  not_ok "teslausb setup did not finish; skipping the archive checks"
+  printf '   last log line: %s\n' "$(on_device 'tail -1 /boot/teslausb-headless-setup.log' | cut -c1-100)"
+fi
+
+if [ "$setup_done" = 1 ]
+then
+  # ---------------------------------------------------------------------------
+  log "the archive path, end to end over $ARCHIVE"
+  # ---------------------------------------------------------------------------
+  if [ "$(on_device 'test -e /backingfiles/cam_disk.bin && echo yes')" = yes ]
+  then ok "the cam backing file exists"
+  else not_ok "there is no cam backing file"
+  fi
+
+  # Stand in for the car writing footage. There is no USB gadget in a VM, so the
+  # clips go straight into the backing file instead of arriving over USB.
+  clip="front.mp4"
+  clipdir="2026-09-13_00-00-00"
+  on_device "mkdir -p /tmp/camseed" > /dev/null
+  if [ "$(on_device "/root/bin/mountimage /backingfiles/cam_disk.bin /tmp/camseed rw && echo mounted")" = mounted ]
+  then
+    ok "mounted the cam image to seed it"
+    on_device "mkdir -p /tmp/camseed/TeslaCam/SavedClips/$clipdir && \
+               head -c 2097152 /dev/urandom > /tmp/camseed/TeslaCam/SavedClips/$clipdir/$clip && \
+               sync" > /dev/null
+    seeded=$(on_device "ls -l /tmp/camseed/TeslaCam/SavedClips/$clipdir/$clip | awk '{print \$5}'")
+    on_device "umount /tmp/camseed" > /dev/null
+    if [ "$seeded" = 2097152 ]
+    then ok "seeded a 2MB clip into SavedClips"
+    else not_ok "could not seed a clip (size reported: '$seeded')"
+    fi
+  else
+    not_ok "could not mount the cam image"
+  fi
+
+  # Make sure nothing is already on the share, so what we find later is ours.
+  on_nas "rm -rf /srv/$SHARE_NAME/*" > /dev/null
+
+  log "forcing an archive cycle"
+  # force_sync is teslausb's own way in: it pretends the archive went away and
+  # came back, which makes archiveloop run a cycle.
+  on_device "systemctl is-active teslausb > /dev/null && timeout 120 /root/bin/force_sync.sh" > /dev/null 2>&1 &
+  force_pid=$!
+
+  found=0
+  for (( i = 0; i < 40; i++ ))
+  do
+    sleep 15
+    if [ "$(on_nas "find /srv/$SHARE_NAME -name '$clip' | head -1")" != "" ]
+    then
+      found=1
+      break
+    fi
+  done
+  wait "$force_pid" 2> /dev/null
+
+  if [ "$found" = 1 ]
+  then
+    ok "the clip arrived on the NAS over $ARCHIVE"
+    landed=$(on_nas "find /srv/$SHARE_NAME -name '$clip' -printf '%s' | head -1")
+    if [ "$landed" = 2097152 ]
+    then ok "and it arrived intact (2MB)"
+    else not_ok "it arrived with size '$landed', expected 2097152"
+    fi
+    printf '   on the NAS: %s\n' "$(on_nas "find /srv/$SHARE_NAME -name '$clip'" | head -1)"
+    # the archive log is the other half of what was asked for
+    if [ "$(on_device 'test -s /mutable/archiveloop.log && echo yes')" = yes ]
+    then ok "archiveloop wrote a log"
+    else not_ok "archiveloop left no log"
+    fi
+    if on_device "grep -qi 'archiv' /mutable/archiveloop.log"
+    then ok "and the log mentions archiving"
+    else not_ok "the log does not mention archiving"
+    fi
+  else
+    not_ok "the clip never arrived on the NAS"
+    printf '   archiveloop log: %s\n' "$(on_device 'tail -3 /mutable/archiveloop.log 2>/dev/null' | tr '\n' ' ' | cut -c1-160)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 log "summary"
 # ---------------------------------------------------------------------------
 printf 'lab: %d passed, %d failed\n' "$pass_count" "$fail_count"
