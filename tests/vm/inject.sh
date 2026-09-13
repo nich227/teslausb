@@ -212,6 +212,17 @@ debugfs -w -R "write $STAGING/autologin.conf /etc/systemd/system/serial-getty@tt
 debugfs -w -R "mkdir /etc/systemd/system/getty.target.wants" "$PART" &> /dev/null || true
 debugfs -w -R "symlink /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service /lib/systemd/system/serial-getty@.service" "$PART" &> /dev/null || true
 
+# Force DietPi's first run setup onto the serial console.
+#
+# /etc/bashrc.d/dietpi.bash calls dietpi-login from any interactive login shell,
+# and the image autologs into tty1, which the harness cannot see. Masking tty1
+# leaves the autologin serial console as the only one, so everything first run
+# setup does, including any prompt it would block on, appears in the serial log.
+# tty1 is deliberately left alone. DietPi advances its first run setup from
+# /etc/bashrc.d/dietpi.bash, which calls dietpi-login for any interactive login
+# shell, and the image autologs into tty1 to make that happen. Masking tty1
+# stops first run setup dead.
+
 # Skip DietPi's own update phase.
 #
 # dietpi-login runs three phases: update (install stage 0), then software

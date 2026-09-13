@@ -362,8 +362,12 @@ fi
 log "checks"
 # ===========================================================================
 if [ "$booted" = 1 ]
-then ok "DietPi ran the teslausb bootstrap"
-else not_ok "the teslausb bootstrap never ran within ${TIMEOUT}s"
+then
+  ok "the bootstrap reported itself on the console"
+else
+  # DietPi runs first run setup on its autologin console, so this is expected to
+  # be quiet here; the SSH checks below are what confirm it.
+  printf '   note: nothing from the bootstrap on the serial console yet\n'
 fi
 
 if grep -qi "DietPi-Software.*first run setup\|Automated setup is in progress" "$SERIAL_LOG" 2> /dev/null
@@ -398,6 +402,39 @@ ssh_vm () {
   ssh "${SSH_COMMON[@]}" "${SSH_ARGS[@]}" "root@$SSH_TARGET" "$@" 2> /dev/null
 }
 
+# DietPi advances its first run setup from /etc/bashrc.d/dietpi.bash, which calls
+# dietpi-login for any interactive login shell. The image autologs into tty1 to
+# make that happen by itself; this drives the same thing over SSH so the test does
+# not depend on being able to see or reach that console, and so a stalled
+# autologin does not hang the run. Each call advances one phase, and the phases
+# reboot, hence the loop.
+advance_first_run () {
+  local _phase
+  for _phase in 1 2 3
+  do
+    ssh "${SSH_COMMON[@]}" -tt "${SSH_ARGS[@]}" "root@$SSH_TARGET" \
+      "bash -lic 'exit'" >> "$FIRSTRUN_LOG" 2>&1
+    sleep 20
+    wait_for_ssh 40 || true
+    [ "$(ssh_vm 'cat /boot/dietpi/.install_stage 2>/dev/null')" = 2 ] && return 0
+  done
+  return 0
+}
+
+wait_for_ssh () {
+  local tries="${1:-30}"
+  local i
+  for (( i = 0; i < tries; i++ ))
+  do
+    ssh_vm true && return 0
+    sleep 5
+  done
+  return 1
+}
+
+readonly FIRSTRUN_LOG="${TMPDIR:-/tmp}/teslausb-vm-firstrun.log"
+rm -f "$FIRSTRUN_LOG"
+
 log "waiting for SSH"
 ssh_up=0
 for _ in $(seq 1 30)
@@ -411,6 +448,22 @@ done
 if [ "$ssh_up" = 1 ]
 then
   ok "SSH is reachable"
+
+  if [ "$(ssh_vm 'cat /boot/dietpi/.install_stage 2>/dev/null')" != 2 ]
+  then
+    log "advancing DietPi's first run setup (log: $FIRSTRUN_LOG)"
+    advance_first_run
+  fi
+
+  # what the bootstrap should have done, from its own log on the boot partition
+  if ssh_vm 'grep -q "teslausb bootstrap starting" /boot/teslausb-headless-setup.log' 2>/dev/null
+  then ok "DietPi ran the teslausb bootstrap"
+  else not_ok "the teslausb bootstrap did not run"
+  fi
+  if ssh_vm 'grep -q "handing over to teslausb setup" /boot/teslausb-headless-setup.log' 2>/dev/null
+  then ok "the bootstrap handed over to teslausb setup"
+  else not_ok "the bootstrap did not hand over"
+  fi
 
   assert_vm () {
     local desc="$1" cmd="$2" want="$3"

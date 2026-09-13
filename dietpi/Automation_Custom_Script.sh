@@ -55,14 +55,26 @@ fetch () {
 
 log "teslausb bootstrap starting on DietPi $(sed -n 's/^G_DIETPI_VERSION_CORE=//p' /boot/dietpi/.version 2>/dev/null)"
 
-# DietPi-RAMlog keeps /var/log in tmpfs and holds it open, which prevents
-# teslausb from remounting the root filesystem read-only later on. Take it out
-# now, before anything else is installed, so setup starts from a clean state.
+# DietPi-RAMlog and teslausb both want to own /var/log as a tmpfs, and DietPi's
+# version writes to the root filesystem when it stops, which does not work once
+# the root is read-only.
+#
+# This script is normally run BY dietpi-software, during DietPi's first run
+# setup, and DietPi refuses to run a second instance of itself while one is
+# active. So only remove it here if we are not nested inside it; otherwise leave
+# it to teslausb's own setup, which does the same thing later from
+# make-root-fs-readonly.sh, outside dietpi-software.
 if grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab 2> /dev/null
 then
-  log "removing DietPi-RAMlog so the root filesystem can be made read-only"
-  /boot/dietpi/dietpi-software uninstall 103 >> "$LOG" 2>&1 ||
-    log "WARNING: could not uninstall DietPi-RAMlog; do it with dietpi-software before setup"
+  if pgrep -f '/boot/dietpi/dietpi-software' | grep -qv "^$$\$"
+  then
+    log "DietPi-RAMlog is still installed; teslausb setup will remove it later"
+    log "(dietpi-software is running this script, so it cannot be called again now)"
+  else
+    log "removing DietPi-RAMlog so teslausb can own /var/log"
+    /boot/dietpi/dietpi-software uninstall 103 >> "$LOG" 2>&1 ||
+      log "WARNING: could not uninstall DietPi-RAMlog; teslausb setup will retry later"
+  fi
 fi
 
 # curl and dos2unix are needed to fetch and sanitise the config; DietPi has curl

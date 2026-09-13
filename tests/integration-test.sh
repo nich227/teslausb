@@ -1135,6 +1135,26 @@ assert_grep "FATAL" /tmp/bootstrap.log "said what went wrong"
 assert_no_file /tmp/handover.calls "did not hand over"
 rm -f /tmp/curl.should.fail
 
+start_case "defers RAMlog removal when dietpi-software is the one running us"
+# DietPi refuses to run a second instance of itself, and this script is normally
+# run BY dietpi-software during first run setup, so calling it again cannot work.
+bootstrap_env
+grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab || \
+  echo "tmpfs /var/log tmpfs size=50M,noatime,lazytime,nodev,nosuid" >> /etc/fstab
+# Stand in for dietpi-software already running. run_bootstrap rewrites the
+# absolute path to the stub, including the path the script looks for, so the fake
+# process has to carry that same name.
+bash -c 'exec -a /tmp/fakedietpi/dietpi-software sleep 60' &
+nested_pid=$!
+sleep 0.3
+rm -f /tmp/dietpi-software.calls
+run_bootstrap
+assert_grep "teslausb setup will remove it later" /tmp/bootstrap.log "deferred instead of failing"
+assert_no_file /tmp/dietpi-software.calls "did not try to call dietpi-software"
+kill "$nested_pid" 2> /dev/null
+wait "$nested_pid" 2> /dev/null
+cp /tmp/fstab.bak /etc/fstab
+
 start_case "carries on when DietPi-RAMlog cannot be uninstalled"
 bootstrap_env
 grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab || \
