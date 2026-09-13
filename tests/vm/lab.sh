@@ -225,18 +225,28 @@ EOF
 }
 
 readonly DEVICE_IMG="$CACHE_DIR/lab-device.img"
-readonly NAS_IMG="$CACHE_DIR/lab-nas.img"
 
-log "preparing both VMs"
+log "preparing the device image"
 prepare_vm device "$DEVICE_IP" "/run-dir/$(basename "$LAB_CONF")" "$DEVICE_IMG"
-prepare_vm nas    "$NAS_IP"    ""                            "$NAS_IMG"
 
-# Boot from overlays so the prepared images stay pristine.
+# Boot the device from an overlay so the prepared image stays pristine.
 readonly DEVICE_OVL="$RUN_DIR/device.qcow2"
-readonly NAS_OVL="$RUN_DIR/nas.qcow2"
-rm -f "$DEVICE_OVL" "$NAS_OVL"
+rm -f "$DEVICE_OVL"
 qemu-img create -q -f qcow2 -F raw -b "$DEVICE_IMG" "$DEVICE_OVL" > /dev/null
-qemu-img create -q -f qcow2 -F raw -b "$NAS_IMG" "$NAS_OVL" > /dev/null
+
+# The NAS is a Debian cloud image driven by cloud-init rather than a second
+# DietPi. It has no first run to sit through, and its whole configuration is
+# declared in one seed, so it is ready in about a minute instead of ten. See
+# prepare-nas-image.sh for why Debian and not Alpine.
+log "preparing the NAS image (Debian cloud image, configured by cloud-init)"
+readonly NAS_OVL="$RUN_DIR/nas.qcow2"
+readonly NAS_SEED="$RUN_DIR/nas-seed.iso"
+NAS_IP="$NAS_IP" NAS_HOSTNAME="$NAS_HOSTNAME" \
+MAC_NAT="52:54:00:aa:00:20" MAC_PRIVATE="52:54:00:bb:00:20" \
+SHARE_NAME="$SHARE_NAME" SHARE_USER="$SHARE_USER" SHARE_PASS="$SHARE_PASS" \
+ARCHIVE="$ARCHIVE" SSH_PUBKEY="$(cat "$TEST_KEY.pub")" VM_PASSWORD="$VM_PASSWORD" \
+CACHE_DIR="$CACHE_DIR" \
+  bash "$REPO/tests/vm/prepare-nas-image.sh" "$NAS_OVL"
 
 # ---------------------------------------------------------------------------
 # Boot. The private segment is a QEMU socket link: one VM listens, the other
@@ -244,8 +254,10 @@ qemu-img create -q -f qcow2 -F raw -b "$NAS_IMG" "$NAS_OVL" > /dev/null
 # ---------------------------------------------------------------------------
 boot_vm () {
   local role="$1" ovl="$2" ssh_port="$3" mac_suffix="$4" socket_arg="$5"
-
+  shift 5
+  # anything left is passed through, which is how the NAS gets its cloud-init seed
   qemu-system-x86_64 \
+    "$@" \
     -machine accel="$ACCEL" \
     -m 1024 \
     -smp 2 \
@@ -267,7 +279,8 @@ log "booting the NAS (listening on the private segment)"
 # the share is not serving by the time it checks, setup gives up for good. In one
 # run samba finished installing at 15:29:29 and the device had already tried, and
 # failed, at 15:28:56.
-NAS_PID=$(boot_vm nas "$NAS_OVL" "$NAS_SSH_PORT" 20 "listen=127.0.0.1:${LAB_NET_PORT}")
+NAS_PID=$(boot_vm nas "$NAS_OVL" "$NAS_SSH_PORT" 20 "listen=127.0.0.1:${LAB_NET_PORT}" \
+  -drive "file=$NAS_SEED,media=cdrom,readonly=on")
 sleep 3
 log "booting the device (connecting to the private segment)"
 
@@ -372,23 +385,33 @@ set_login_shell () {
 # of vers and sec". So the share is set up before the device is nudged into
 # starting setup at all.
 setup_archive_share () {
-  # ---------------------------------------------------------------------------
-  on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq update" > /dev/null
+  # cloud-init already applied all of this from the seed: the account, the share
+  # directory, samba or sshd, and avahi. What is left is to wait for it to finish
+  # and check the result, rather than installing anything over ssh.
+  local ready=no
+  local i
+  for (( i = 0; i < 60; i++ ))
+  do
+    if [ "$(on_nas "test -e /run/nas-ready && echo yes" 2> /dev/null)" = yes ]
+    then
+      ready=yes
+      break
+    fi
+    sleep 10
+  done
+
+  if [ "$ready" = yes ]
+  then ok "cloud-init finished configuring the NAS"
+  else not_ok "cloud-init did not finish on the NAS; see the serial log"
+  fi
+
+  if [ "$(on_nas "test -d /srv/$SHARE_NAME && echo yes")" = yes ]
+  then ok "the share directory exists"
+  else not_ok "there is no /srv/$SHARE_NAME on the NAS"
+  fi
+
   case "$ARCHIVE" in
     cifs)
-      on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install samba avahi-daemon libnss-mdns curl" > /dev/null
-      on_nas "mkdir -p /srv/$SHARE_NAME && chmod 777 /srv/$SHARE_NAME"
-      on_nas "id $SHARE_USER || useradd -M -s /usr/sbin/nologin $SHARE_USER"
-      on_nas "printf '%s\n%s\n' '$SHARE_PASS' '$SHARE_PASS' | smbpasswd -s -a $SHARE_USER"
-      on_nas "cat >> /etc/samba/smb.conf <<'EOF'
-  [$SHARE_NAME]
-     path = /srv/$SHARE_NAME
-     browseable = yes
-     read only = no
-     guest ok = no
-     valid users = $SHARE_USER
-  EOF"
-      on_nas "systemctl restart smbd"
       if [ "$(on_nas "systemctl is-active smbd")" = active ]
       then ok "the NAS is serving an SMB share"
       else not_ok "smbd is not running on the NAS"
@@ -396,21 +419,19 @@ setup_archive_share () {
       ;;
     rsync)
       # teslausb's rsync backend is rsync over ssh: archive-clips.sh runs
-      # rsync ... "$RSYNC_USER@$RSYNC_SERVER:$RSYNC_PATH" and the reachability
-      # check falls back to "ssh $RSYNC_USER@host exit". An rsync daemon with a
-      # secrets file, which is what this used to set up, is never contacted. So
-      # the NAS gets a real account with a home directory instead, and the
-      # destination is an absolute path owned by it.
-      on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install rsync avahi-daemon libnss-mdns curl" > /dev/null
-      on_nas "id $SHARE_USER > /dev/null 2>&1 || useradd -m -s /bin/bash $SHARE_USER"
-      on_nas "mkdir -p /srv/$SHARE_NAME && chown $SHARE_USER:$SHARE_USER /srv/$SHARE_NAME && chmod 755 /srv/$SHARE_NAME"
+      # rsync to "$RSYNC_USER@$RSYNC_SERVER:$RSYNC_PATH" and the reachability
+      # check falls back to "ssh $RSYNC_USER@host exit", so what matters is that
+      # sshd is up and the account exists. An rsync daemon is never contacted.
       if [ "$(on_nas "systemctl is-active ssh")" = active ]
       then ok "the NAS accepts ssh, which is what rsync archiving uses"
       else not_ok "sshd is not running on the NAS"
       fi
+      if [ "$(on_nas "id $SHARE_USER > /dev/null 2>&1 && echo yes")" = yes ]
+      then ok "the archive account exists on the NAS"
+      else not_ok "there is no $SHARE_USER account on the NAS"
+      fi
       ;;
   esac
-
 }
 
 log "waiting for both VMs to answer (up to ${TIMEOUT}s)"
@@ -418,8 +439,6 @@ wait_for nas 120 || { echo "FATAL: the NAS never came up; see $RUN_DIR/nas-seria
 ok "the NAS is up"
 
 log "setting up the archive share on the NAS, before the device needs it"
-advance_first_run nas || step "the NAS did not reach install stage 2; carrying on"
-[ "$LOGIN_SHELL" != bash ] && set_login_shell nas "$LOGIN_SHELL"
 setup_archive_share
 DEVICE_PID=$(boot_vm device "$DEVICE_OVL" "$DEVICE_SSH_PORT" 10 "connect=127.0.0.1:${LAB_NET_PORT}")
 wait_for device 180 || { echo "FATAL: the device never came up; see $RUN_DIR/device-serial.log" >&2; exit 1; }
@@ -541,6 +560,29 @@ fi
 
 if [ "$setup_done" = 1 ]
 then
+  # ---------------------------------------------------------------------------
+  log "openssh is the only ssh server"
+  # ---------------------------------------------------------------------------
+  # teslausb standardises on OpenSSH: the rsync archive backend shells out to ssh,
+  # which dropbear does not provide.
+  for role in device nas
+  do
+    if [ "$role" = device ]
+    then state=$(on_device "dpkg-query -W -f='\${Status}' openssh-server 2>/dev/null | grep -c 'ok installed'; dpkg-query -W -f='\${Status}' dropbear-bin 2>/dev/null | grep -c 'ok installed'")
+    else state=$(on_nas "dpkg-query -W -f='\${Status}' openssh-server 2>/dev/null | grep -c 'ok installed'; dpkg-query -W -f='\${Status}' dropbear-bin 2>/dev/null | grep -c 'ok installed'")
+    fi
+    have_openssh=$(printf '%s\n' "$state" | sed -n 1p)
+    have_dropbear=$(printf '%s\n' "$state" | sed -n 2p)
+    if [ "$have_openssh" = 1 ]
+    then ok "the $role runs openssh"
+    else not_ok "the $role has no openssh-server"
+    fi
+    if [ "${have_dropbear:-0}" = 0 ]
+    then ok "and no dropbear on the $role"
+    else not_ok "dropbear is still installed on the $role"
+    fi
+  done
+
   # ---------------------------------------------------------------------------
   log "the archive path, end to end over $ARCHIVE"
   # ---------------------------------------------------------------------------
