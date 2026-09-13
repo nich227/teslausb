@@ -152,8 +152,7 @@ export ARCHIVE_SYSTEM=rsync
 export ARCHIVE_SERVER=${NAS_IP}
 export RSYNC_USER=${SHARE_USER}
 export RSYNC_SERVER=${NAS_IP}
-export RSYNC_PATH=${SHARE_NAME}
-export RSYNC_PASSWORD='${SHARE_PASS}'
+export RSYNC_PATH=/srv/${SHARE_NAME}
 export OS_PASSWORD='${VM_PASSWORD}'
 export TESLAUSB_HOSTNAME=teslausb
 export UPGRADE_PACKAGES=false
@@ -396,20 +395,18 @@ setup_archive_share () {
       fi
       ;;
     rsync)
+      # teslausb's rsync backend is rsync over ssh: archive-clips.sh runs
+      # rsync ... "$RSYNC_USER@$RSYNC_SERVER:$RSYNC_PATH" and the reachability
+      # check falls back to "ssh $RSYNC_USER@host exit". An rsync daemon with a
+      # secrets file, which is what this used to set up, is never contacted. So
+      # the NAS gets a real account with a home directory instead, and the
+      # destination is an absolute path owned by it.
       on_nas "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install rsync avahi-daemon libnss-mdns curl" > /dev/null
-      on_nas "mkdir -p /srv/$SHARE_NAME && chmod 777 /srv/$SHARE_NAME"
-      on_nas "cat > /etc/rsyncd.conf <<'EOF'
-  [$SHARE_NAME]
-     path = /srv/$SHARE_NAME
-     read only = false
-     auth users = $SHARE_USER
-     secrets file = /etc/rsyncd.secrets
-  EOF"
-      on_nas "printf '%s:%s\n' '$SHARE_USER' '$SHARE_PASS' > /etc/rsyncd.secrets && chmod 600 /etc/rsyncd.secrets"
-      on_nas "systemctl enable --now rsync"
-      if [ "$(on_nas "systemctl is-active rsync")" = active ]
-      then ok "the NAS is serving an rsync module"
-      else not_ok "rsyncd is not running on the NAS"
+      on_nas "id $SHARE_USER > /dev/null 2>&1 || useradd -m -s /bin/bash $SHARE_USER"
+      on_nas "mkdir -p /srv/$SHARE_NAME && chown $SHARE_USER:$SHARE_USER /srv/$SHARE_NAME && chmod 755 /srv/$SHARE_NAME"
+      if [ "$(on_nas "systemctl is-active ssh")" = active ]
+      then ok "the NAS accepts ssh, which is what rsync archiving uses"
+      else not_ok "sshd is not running on the NAS"
       fi
       ;;
   esac
@@ -550,6 +547,24 @@ then
   if [ "$(on_device 'test -e /backingfiles/cam_disk.bin && echo yes')" = yes ]
   then ok "the cam backing file exists"
   else not_ok "there is no cam backing file"
+  fi
+
+  if [ "$ARCHIVE" = rsync ]
+  then
+    # doc/SetupRSync.md has the user copy the device's key to the archive host
+    # themselves, before archiving can work. This is that step.
+    on_device "mkdir -p /root/.ssh && chmod 700 /root/.ssh
+               [ -f /root/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/id_ed25519" > /dev/null
+    device_pub=$(on_device "cat /root/.ssh/id_ed25519.pub")
+    on_nas "install -d -m 700 -o $SHARE_USER -g $SHARE_USER /home/$SHARE_USER/.ssh
+            printf '%s\n' '$device_pub' >> /home/$SHARE_USER/.ssh/authorized_keys
+            chown $SHARE_USER:$SHARE_USER /home/$SHARE_USER/.ssh/authorized_keys
+            chmod 600 /home/$SHARE_USER/.ssh/authorized_keys" > /dev/null
+    on_device "ssh-keyscan -H $NAS_IP >> /root/.ssh/known_hosts 2>/dev/null" > /dev/null
+    if [ "$(on_device "ssh -o BatchMode=yes -o ConnectTimeout=10 $SHARE_USER@$NAS_IP true && echo yes")" = yes ]
+    then ok "the device can reach the NAS over ssh as $SHARE_USER"
+    else not_ok "the device cannot ssh to the NAS, so rsync archiving cannot work"
+    fi
   fi
 
   # Stand in for the car writing footage. There is no USB gadget in a VM, so the
