@@ -554,8 +554,10 @@ then
 
   # Stand in for the car writing footage. There is no USB gadget in a VM, so the
   # clips go straight into the backing file instead of arriving over USB.
-  clip="front.mp4"
-  clipdir="2026-09-13_00-00-00"
+  # Named the way the car names them, under an event folder, because the snapshot
+  # step links clips per event directory.
+  clipdir="2026-09-13_18-00-00"
+  clip="${clipdir}-front.mp4"
   on_device "mkdir -p /tmp/camseed" > /dev/null
   if [ "$(on_device "/root/bin/mountimage /backingfiles/cam_disk.bin /tmp/camseed rw && echo mounted")" = mounted ]
   then
@@ -576,10 +578,20 @@ then
   # Make sure nothing is already on the share, so what we find later is ours.
   on_nas "rm -rf /srv/$SHARE_NAME/*" > /dev/null
 
+  # Clips are archived from a snapshot, not from the live cam mount, and a
+  # snapshot is normally taken when the car disconnects. Restarting the service is
+  # the honest equivalent here: archiveloop snapshots what it finds on startup,
+  # exactly as it would on a device that booted with footage already on the disk.
+  # Without this the cycle runs and archives nothing, because the only snapshot
+  # predates the clip.
+  log "restarting archiveloop so it snapshots the seeded clip"
+  on_device "systemctl restart teslausb" > /dev/null
+  sleep 20
+
   log "forcing an archive cycle"
   # force_sync is teslausb's own way in: it pretends the archive went away and
   # came back, which makes archiveloop run a cycle.
-  on_device "systemctl is-active teslausb > /dev/null && timeout 120 /root/bin/force_sync.sh" > /dev/null 2>&1 &
+  on_device "timeout 150 /root/bin/force_sync.sh" > /dev/null 2>&1 &
   force_pid=$!
 
   found=0
