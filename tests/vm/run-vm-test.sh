@@ -392,6 +392,9 @@ declare -a SSH_COMMON=(
 [ -n "$JUMP_HOST" ] && SSH_COMMON+=(-J "$JUMP_HOST")
 
 ssh_vm () {
+  # the command is expanded by the remote shell on purpose: the checks below ask
+  # about state inside the VM
+  # shellcheck disable=SC2029
   ssh "${SSH_COMMON[@]}" "${SSH_ARGS[@]}" "root@$SSH_TARGET" "$@" 2> /dev/null
 }
 
@@ -442,10 +445,11 @@ printf 'serial log: %s\n' "$SERIAL_LOG"
 
 if [ "$KEEP" = 1 ]
 then
-  # shellcheck disable=SC2029  # this is text for the user, not a command we run
+  # shellcheck disable=SC2029  # the heredoc below is instructions, not commands
   cat <<EOF
 
 The VM is still running (pid $QEMU_PID). To log in:
+
 
   ssh ${JUMP_HOST:+-J $JUMP_HOST} ${SSH_ARGS[*]} -i $TEST_KEY root@$SSH_TARGET
   (or with a password: ssh ${SSH_ARGS[*]} root@$SSH_TARGET  #  $VM_PASSWORD)
