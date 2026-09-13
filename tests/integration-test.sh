@@ -1686,6 +1686,37 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+banner "configure-web.sh clears the webroot safely"
+# ===========================================================================
+# A fresh DietPi has an empty /var/www/html, because nginx-common there ships no
+# default index page. The clearing step used to pipe find into "xargs -0 rm",
+# which exits 123 with "rm: missing operand" when there is nothing to remove, and
+# that killed setup outright. Run the real line from the script against an empty
+# directory and against a populated one.
+start_case "the clearing step survives an empty webroot"
+clear_cmd=$(grep -E "^find /var/www/html .* -delete$" "$REPO/setup/pi/configure-web.sh")
+assert_eq "$(printf '%s' "$clear_cmd" | grep -c .)" 1 \
+  "the script still clears the webroot with find -delete"
+assert_eq "$(grep -cE "xargs -0 rm$" "$REPO/setup/pi/configure-web.sh")" 0 \
+  "and no longer pipes into a bare xargs rm"
+
+mkdir -p /tmp/emptyroot
+( eval "${clear_cmd/\/var\/www\/html//tmp/emptyroot}" ) && rc=0 || rc=$?
+assert_eq "$rc" 0 "exits 0 on an empty directory"
+
+start_case "and still removes files and symlinks when there are some"
+mkdir -p /tmp/fullroot/sub
+touch /tmp/fullroot/index.html /tmp/fullroot/sub/nested.html
+ln -sf /tmp/fullroot/index.html /tmp/fullroot/link.html
+( eval "${clear_cmd/\/var\/www\/html//tmp/fullroot}" ) && rc=0 || rc=$?
+assert_eq "$rc" 0 "exits 0"
+assert_no_file /tmp/fullroot/index.html "removed the file"
+assert_no_file /tmp/fullroot/link.html "removed the symlink"
+assert_no_file /tmp/fullroot/sub/nested.html "removed nested files"
+assert_eq "$([ -d /tmp/fullroot/sub ] && echo yes)" yes "kept directories"
+rm -rf /tmp/emptyroot /tmp/fullroot
+
+# ===========================================================================
 if [ -n "${COVERAGE:-}" ]
 then
   banner "coverage"

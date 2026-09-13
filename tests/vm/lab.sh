@@ -263,10 +263,14 @@ boot_vm () {
 }
 
 log "booting the NAS (listening on the private segment)"
+# The NAS is booted and provisioned before the device exists at all. The device
+# runs teslausb setup unattended within a couple of minutes of first boot, and if
+# the share is not serving by the time it checks, setup gives up for good. In one
+# run samba finished installing at 15:29:29 and the device had already tried, and
+# failed, at 15:28:56.
 NAS_PID=$(boot_vm nas "$NAS_OVL" "$NAS_SSH_PORT" 20 "listen=127.0.0.1:${LAB_NET_PORT}")
 sleep 3
 log "booting the device (connecting to the private segment)"
-DEVICE_PID=$(boot_vm device "$DEVICE_OVL" "$DEVICE_SSH_PORT" 10 "connect=127.0.0.1:${LAB_NET_PORT}")
 
 # ---------------------------------------------------------------------------
 # Talking to them
@@ -420,7 +424,8 @@ log "setting up the archive share on the NAS, before the device needs it"
 advance_first_run nas || step "the NAS did not reach install stage 2; carrying on"
 [ "$LOGIN_SHELL" != bash ] && set_login_shell nas "$LOGIN_SHELL"
 setup_archive_share
-wait_for device 120 || { echo "FATAL: the device never came up; see $RUN_DIR/device-serial.log" >&2; exit 1; }
+DEVICE_PID=$(boot_vm device "$DEVICE_OVL" "$DEVICE_SSH_PORT" 10 "connect=127.0.0.1:${LAB_NET_PORT}")
+wait_for device 180 || { echo "FATAL: the device never came up; see $RUN_DIR/device-serial.log" >&2; exit 1; }
 ok "the device is up"
 
 log "letting DietPi finish its own setup on the device"
@@ -465,7 +470,18 @@ then ok "teslausb.local answers a ping from the NAS"
 else not_ok "teslausb.local does not answer from the NAS"
 fi
 
-http_code=$(on_nas "curl -s -o /dev/null -m 10 -w '%{http_code}' http://teslausb.local/ 2>/dev/null")
+# The web interface is put in place by setup, which is still running at this
+# point, so a 403 here means "not configured yet" rather than broken. Wait for it
+# instead of judging it mid-setup.
+http_code=000
+for (( i = 0; i < 60; i++ ))
+do
+  http_code=$(on_nas "curl -s -o /dev/null -m 10 -w '%{http_code}' http://teslausb.local/ 2>/dev/null")
+  case "$http_code" in
+    200|401) break ;;
+  esac
+  sleep 20
+done
 case "$http_code" in
   200|401)
     ok "the web interface answers on http://teslausb.local/ ($http_code)"

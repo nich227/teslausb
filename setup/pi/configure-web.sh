@@ -22,7 +22,10 @@ umount /var/www/html/TeslaCam &> /dev/null || true
 umount /var/www/html/fs/Music &> /dev/null || true
 umount /var/www/html/fs/LightShow &> /dev/null || true
 umount /var/www/html/fs/Boombox &> /dev/null || true
-find /var/www/html -mount \( -type f -o -type l \) -print0 | xargs -0 rm
+# -delete rather than piping to xargs: on a fresh DietPi the webroot is empty,
+# because nginx-common there ships no default index page, and "xargs -0 rm" with
+# nothing to remove exits 123 with "rm: missing operand", which killed setup here.
+find /var/www/html -mount \( -type f -o -type l \) -delete
 cp -r "$SOURCE_DIR/teslausb-www/html" /var/www/
 ln -sf /teslausb/teslausb-headless-setup.log /var/www/html/
 ln -sf /mutable/archiveloop.log /var/www/html/
