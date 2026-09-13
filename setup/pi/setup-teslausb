@@ -439,6 +439,12 @@ readonly TESLAUSB_PACKAGES=(
   dosfstools
   # archive and setup plumbing
   rsync
+  # The rsync archive backend is rsync over ssh, and archive-is-reachable.sh
+  # falls back to "ssh $RSYNC_USER@host exit", so the device needs an ssh client.
+  # DietPi ships dropbear, which provides dbclient but no ssh, ssh-keygen or
+  # ssh-keyscan, and the Raspberry Pi OS image always had openssh-client baked in.
+  # Without this, rsync archiving fails with "ssh: command not found".
+  openssh-client
   dos2unix
   hping3
   libxxhash0

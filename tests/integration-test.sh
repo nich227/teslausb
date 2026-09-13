@@ -1686,6 +1686,21 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+banner "the package list covers what DietPi does not ship"
+# ===========================================================================
+start_case "an ssh client is installed for rsync archiving"
+# DietPi ships dropbear, which gives dbclient but not ssh, ssh-keygen or
+# ssh-keyscan. teslausb's rsync backend is rsync over ssh and its reachability
+# check falls back to "ssh user@host exit", so without openssh-client archiving
+# fails with "ssh: command not found".
+assert_grep "^  openssh-client$" "$REPO/setup/pi/setup-teslausb" "openssh-client is in TESLAUSB_PACKAGES"
+assert_grep "^  rsync$" "$REPO/setup/pi/setup-teslausb" "and rsync itself"
+
+start_case "the archive backends that need helpers have them"
+assert_grep "^  cifs-utils$\|apt-get -y install hping3 cifs-utils" \
+  "$REPO/run/cifs_archive/verify-and-configure-archive.sh" "cifs-utils is installed for the cifs backend"
+
+# ===========================================================================
 banner "configure-web.sh clears the webroot safely"
 # ===========================================================================
 # A fresh DietPi has an empty /var/www/html, because nginx-common there ships no
