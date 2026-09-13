@@ -448,6 +448,11 @@ readonly TESLAUSB_PACKAGES=(
   nginx
   fcgiwrap
   libnginx-mod-http-fancyindex
+  # mDNS, so the device answers to teslausb.local. Raspberry Pi OS shipped
+  # avahi-daemon by default and setup already restarts it after a hostname
+  # change; DietPi ships neither, so without this the name never resolves.
+  avahi-daemon
+  libnss-mdns
   # notification scripts and tesla_api
   python3-pip
   # building the CTTS eraser

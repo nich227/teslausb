@@ -240,6 +240,52 @@ then
   debugfs -w -R "write $STAGING/install_stage /boot/dietpi/.install_stage" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
 fi
 
+# A ping that works without host ICMP privileges.
+#
+# DietPi's first run setup begins with 'ping -4nc 1 -W 10 9.9.9.9' and refuses to
+# continue if it fails. QEMU's user-mode networking can only carry ICMP when the
+# host allows unprivileged ping sockets, which many hosts do not, so first run
+# setup dies on a VM that in fact has perfectly good TCP and DNS. Rather than
+# asking for a sysctl change on the host, give the guest a ping that falls back
+# to a TCP connect when ICMP is unavailable.
+if [ "${PING_SHIM:-1}" = 1 ]
+then
+  log "installing a ping that falls back to TCP"
+  cat > "$STAGING/ping" <<'EOF'
+#!/bin/bash
+# teslausb VM test shim: see tests/vm/inject.sh
+if /bin/ping "$@" 2> /dev/null
+then
+  exit 0
+fi
+# ICMP is unavailable (QEMU user-mode networking without host ping sockets).
+# Fall back to proving the network works with a TCP connect.
+for target in 1.1.1.1:443 9.9.9.9:443 deb.debian.org:443
+do
+  if timeout 5 bash -c "echo > /dev/tcp/${target%:*}/${target##*:}" 2> /dev/null
+  then
+    exit 0
+  fi
+done
+exit 1
+EOF
+  debugfs -w -R "mkdir /usr/local/bin" "$PART" &> /dev/null || true
+  debugfs -w -R "rm /usr/local/bin/ping" "$PART" &> /dev/null || true
+  debugfs -w -R "write $STAGING/ping /usr/local/bin/ping" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+  debugfs -w -R "sif /usr/local/bin/ping mode 0100755" "$PART" &> /dev/null || true
+fi
+
+# An extra interface, used by the two VM lab for its private segment. DietPi's
+# dietpi.txt only configures one interface, so this goes in as an interfaces.d
+# snippet, which ifupdown picks up on its own.
+if [ -n "${EXTRA_INTERFACES:-}" ] && [ -f "$EXTRA_INTERFACES" ]
+then
+  log "adding a second interface from $(basename "$EXTRA_INTERFACES")"
+  debugfs -w -R "mkdir /etc/network/interfaces.d" "$PART" &> /dev/null || true
+  debugfs -w -R "rm /etc/network/interfaces.d/lab" "$PART" &> /dev/null || true
+  debugfs -w -R "write $EXTRA_INTERFACES /etc/network/interfaces.d/lab" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
+fi
+
 # An SSH key for root, so the checks can log in without a password. Dropbear,
 # which is what DietPi installs by default, reads /root/.ssh/authorized_keys and
 # insists on tight permissions.
@@ -262,12 +308,13 @@ e2fsck -fp "$PART" > /dev/null 2>&1 || true
 log "writing the partition back"
 dd if="$PART" of="$WORK" bs=512 seek="$start" conv=notrunc status=none
 
-cp "$WORK" /cache/teslausb-vm.img
+readonly OUT="${OUT_IMAGE:-/cache/teslausb-vm.img}"
+cp "$WORK" "$OUT"
 # The container runs as root; hand the image back to whoever invoked us so QEMU
 # can open it without privileges.
 if [ -n "${HOST_UID:-}" ]
 then
-  chown "${HOST_UID}:${HOST_GID:-$HOST_UID}" /cache/teslausb-vm.img
+  chown "${HOST_UID}:${HOST_GID:-$HOST_UID}" "$OUT"
 fi
-chmod 664 /cache/teslausb-vm.img
-log "image ready: $(du -h /cache/teslausb-vm.img | cut -f1)"
+chmod 664 "$OUT"
+log "image ready: $(du -h "$OUT" | cut -f1)"

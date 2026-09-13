@@ -297,7 +297,7 @@ pkg_list=$(sed -n '/^readonly TESLAUSB_PACKAGES=(/,/^)/p' "$REPO/setup/pi/setup-
 if [ -n "$pkg_list" ]
 then
   ok "setup carries an explicit package list"
-  for pkg in xfsprogs dosfstools exfatprogs dos2unix autofs nginx fcgiwrap python3-pip
+  for pkg in xfsprogs dosfstools exfatprogs dos2unix autofs nginx fcgiwrap python3-pip avahi-daemon libnss-mdns
   do
     if grep -qE "^\s+${pkg}\s*$" <<< "$pkg_list"
     then ok "$pkg is bootstrapped"
@@ -316,6 +316,21 @@ then
   fi
 else
   not_ok "no package list found in setup-teslausb"
+fi
+
+start_case "the hostname is advertised over mDNS, so teslausb.local resolves"
+# setup restarts avahi-daemon after changing the hostname. Raspberry Pi OS had it
+# installed by default; DietPi does not, so it has to be in the package list or
+# the name silently never resolves.
+assert_grep "systemctl restart avahi-daemon" "$REPO/setup/pi/setup-teslausb" \
+  "setup restarts avahi after the hostname change"
+if grep -qE "^\s+avahi-daemon\s*$" <<< "$pkg_list"
+then ok "avahi-daemon is installed by setup"
+else not_ok "avahi-daemon is restarted but never installed"
+fi
+if dpkg-query -W -f='${Status}' avahi-daemon 2> /dev/null | grep -q "install ok installed"
+then not_ok "unexpected: avahi-daemon is already in this DietPi image"
+else ok "confirmed absent from a bare DietPi, which is why it must be installed"
 fi
 
 start_case "DietPi-RAMlog is removed before the root filesystem is made read-only"

@@ -28,5 +28,6 @@ shellcheck --exclude=SC1091 \
            ./tools/prepare-boot-partition.sh \
            ./tests/vm/run-vm-test.sh \
            ./tests/vm/inject.sh \
+           ./tests/vm/lab.sh \
            ./tests/docker/build-dietpi-base.sh \
            ./tests/docker/extract-dietpi-rootfs.sh
