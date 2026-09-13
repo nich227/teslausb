@@ -25,7 +25,7 @@
 #
 # Usage:
 #   tests/vm/lab.sh [--keep] [--archive cifs|rsync] [--timeout SECONDS]
-#                   [--dietpi-update] [--start-dropbear]
+#                   [--fast] [--start-dropbear]
 #
 # Nothing here needs root on the host.
 
@@ -52,9 +52,11 @@ do
     --archive)  ARCHIVE="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
     --distro)   DISTRO="$2"; shift 2 ;;
-    # DietPi's own apt upgrade is skipped by default, which is where most of a run
-    # used to go. This puts it back, for a run that covers the update path too.
+    # DietPi's own apt upgrade is included by default: measured, it costs about
+    # 35 seconds of a six minute run, which is not worth trading coverage for.
+    # Kept as an explicit flag so scripts that passed it still work.
     --dietpi-update) DIETPI_UPDATE=1; shift ;;
+    --fast)          DIETPI_UPDATE=0; shift ;;
     # Boot the device with dropbear, as a stock DietPi image does, so teslausb has
     # to replace it with openssh rather than DietPi installing openssh up front.
     --start-dropbear) START_DROPBEAR=1; shift ;;
@@ -227,7 +229,7 @@ EOF
     -e "TESLAUSB_BOOTSTRAP=$bootstrap" \
     -e "VM_PASSWORD=$VM_PASSWORD" \
     -e "DIETPI_EXTRA_KEYS=$hostname_key" \
-    -e "SKIP_DIETPI_UPDATE=$(( 1 - ${DIETPI_UPDATE:-0} ))" \
+    -e "SKIP_DIETPI_UPDATE=$(( 1 - ${DIETPI_UPDATE:-1} ))" \
     -e "OUT_IMAGE=/cache/$(basename "$out")" \
     -e "HOST_UID=$(id -u)" \
     -e "HOST_GID=$(id -g)" \
@@ -241,9 +243,9 @@ EOF
 
 readonly DEVICE_IMG="$CACHE_DIR/lab-device.img"
 
-if [ "${DIETPI_UPDATE:-0}" = 1 ]
-then step "DietPi's own apt upgrade is included in this run, which is slow but covers it"
-else step "DietPi's own apt upgrade is skipped; use --dietpi-update to include it"
+if [ "${DIETPI_UPDATE:-1}" = 1 ]
+then step "DietPi's own apt upgrade is included in this run"
+else step "DietPi's own apt upgrade is skipped (--fast)"
 fi
 if [ "${START_DROPBEAR:-0}" = 1 ]
 then step "the device starts with dropbear, so teslausb has to replace it"
