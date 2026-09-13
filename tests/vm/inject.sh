@@ -181,9 +181,13 @@ if [ "${TESLAUSB_BOOTSTRAP:-1}" = 1 ]
 then
 log "staging the working tree for an offline install"
 debugfs -w -R "mkdir /boot/teslausb-local" "$PART" &> /dev/null || true
+# Everything, not a hand-picked list. Naming the directories individually left
+# teslausb-www out, so configure-web.sh had nothing to copy into the webroot and
+# setup died there under set -e. The web UI's build output lives in
+# teslausb-www/html and is what the device actually serves.
 tar -cf /tmp/repo.tar -C /repo \
-  --exclude=.git --exclude=node_modules --exclude='._*' \
-  setup run dietpi tools tests check.sh 2> /dev/null
+  --exclude=.git --exclude=node_modules --exclude='._*' --exclude='*.qcow2' \
+  . 2> /dev/null
 for f in /repo/setup/pi/first-boot.sh /repo/setup/pi/teslausb-setup.service /tmp/repo.tar
 do
   debugfs -w -R "rm /boot/teslausb-local/$(basename "$f")" "$PART" &> /dev/null || true
