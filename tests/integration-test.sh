@@ -234,6 +234,8 @@ fi
 # drive the function both ways with an empty /sys/class/udc stand-in
 run_udc_check () {
   (
+    # called by the eval'd check_udc below
+    # shellcheck disable=SC2329
     setup_progress () { echo "$*"; }
     # shellcheck disable=SC2317
     eval "${udc_fn/\/sys\/class\/udc//tmp/emptyudc}"
