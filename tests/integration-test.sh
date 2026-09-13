@@ -1196,6 +1196,77 @@ run_bootstrap
 assert_file /boot/teslausb-headless-setup.log "wrote the headless setup log"
 
 # ===========================================================================
+banner "sentry-keeper"
+# ===========================================================================
+# Holds Sentry Mode on for the archive window, because Sentry is what keeps the
+# car awake and the car is what powers the Pi.
+
+start_case "the awake scripts start and stop the keeper"
+assert_grep "sentry-keeper.sh &" "$REPO/run/awake_start" "awake_start starts it in the background"
+assert_grep "sentry_keeper_pid" "$REPO/run/awake_start" "and records its pid"
+assert_grep "kill \"\$(cat /tmp/sentry_keeper_pid)\"" "$REPO/run/awake_stop" "awake_stop stops it"
+# it must be stopped before Sentry is disabled, or it can re-arm afterwards
+stop_line=$(grep -n "sentry_keeper_pid" "$REPO/run/awake_stop" | head -1 | cut -d: -f1)
+# the first actual "turn Sentry off" call, whichever backend it belongs to
+disable_line=$(grep -n "set_sentry_mode&sentryMode=false\|command/disable_sentry\|sentry-mode off" \
+  "$REPO/run/awake_stop" | head -1 | cut -d: -f1)
+if [ -n "$stop_line" ] && [ -n "$disable_line" ] && [ "$stop_line" -lt "$disable_line" ]
+then ok "the keeper is stopped before Sentry is disabled"
+else not_ok "the keeper is stopped after the disable, so it can race and re-arm"
+fi
+
+start_case "the keeper only ever enables Sentry, and only when it is safe"
+if grep -v "^[[:blank:]]*#" "$REPO/run/sentry-keeper.sh" | grep -q "disable_sentry"
+then not_ok "the keeper can disable Sentry, which is not its job"
+else ok "it never disables Sentry (only mentioned in comments)"
+fi
+assert_grep 'online" == "online"' "$REPO/run/sentry-keeper.sh" "requires the car to be online"
+assert_grep 'shift_state" == "P"' "$REPO/run/sentry-keeper.sh" "requires the car to be parked"
+assert_grep "MAX_RUNTIME" "$REPO/run/sentry-keeper.sh" "has a runtime cap"
+
+start_case "the keeper exits if it is orphaned"
+cat > /tmp/keeper.conf <<'EOF'
+export TESSIE_API_TOKEN=token
+export TESSIE_VIN=VIN
+EOF
+rm -f /tmp/keeper.log /tmp/keeper.pid
+env SENTRY_KEEPER_INTERVAL=1 SENTRY_KEEPER_PIDFILE=/tmp/keeper.pid \
+    SENTRY_KEEPER_LOG=/tmp/keeper.log SETUP_CONF=/tmp/keeper.conf \
+    bash "$REPO/run/sentry-keeper.sh" &
+keeper_pid=$!
+echo "$keeper_pid" > /tmp/keeper.pid
+sleep 3
+rm -f /tmp/keeper.pid            # simulate awake_stop having cleaned up
+sleep 3
+if kill -0 "$keeper_pid" 2> /dev/null
+then
+  not_ok "the keeper kept running after its pid file went away"
+  kill "$keeper_pid" 2> /dev/null
+else
+  ok "the keeper noticed and exited"
+fi
+assert_grep "pid file gone" /tmp/keeper.log "said why it exited"
+
+start_case "the keeper refuses to run without credentials"
+rm -f /tmp/keeper2.log
+env SENTRY_KEEPER_LOG=/tmp/keeper2.log SETUP_CONF=/nonexistent \
+    TESSIE_API_TOKEN= TESSIE_VIN= bash "$REPO/run/sentry-keeper.sh"
+assert_eq "$?" 1 "exits non-zero"
+assert_grep "TESSIE_API_TOKEN" /tmp/keeper2.log "said what was missing"
+
+start_case "setup installs the keeper only when Tessie is configured"
+keeper_installer=$(sed -n '/^function install_sentry_keeper/,/^}/p' "$REPO/setup/pi/configure.sh")
+if [ -n "$keeper_installer" ]
+then ok "configure.sh has an installer for it"
+else not_ok "nothing installs sentry-keeper"
+fi
+assert_grep "install_sentry_keeper /root/bin" "$REPO/setup/pi/configure.sh" "and calls it"
+if grep -qE "^\s+jq\s*$" <<< "$pkg_list"
+then ok "jq is bootstrapped, which both the watchdog and the keeper need"
+else not_ok "jq is used to parse Tessie's JSON but never installed"
+fi
+
+# ===========================================================================
 banner "installer: install_usb_link_watchdog"
 # ===========================================================================
 # configure.sh is a large script that expects a full teslausb setup, so extract
@@ -1289,16 +1360,66 @@ echo rebooted >> /tmp/reboot.calls
 EOF
 chmod +x "$STUBS/reboot"
 
+# The watchdog asks Tessie whether the car is recording. Note that the setup
+# driver fixture earlier installs its own curl stub for download emulation, so
+# this has to be (re)created here rather than with the other stubs.
+install_tessie_stub () {
+  cat > "$STUBS/curl" <<'EOF'
+#!/bin/bash
+if [ -e /tmp/tessie_down ]
+then
+  exit 7
+fi
+state=$(cat /tmp/dashcam_state 2>/dev/null || echo Recording)
+ts=$(( ( $(date +%s) - 30 ) * 1000 ))
+printf '{"state":"online","vehicle_state":{"dashcam_state":"%s","timestamp":%s}}' "$state" "$ts"
+EOF
+  chmod +x "$STUBS/curl"
+}
+install_tessie_stub
+
+# Runs the watchdog with per-case environment overrides, always through the
+# coverage tracing so these paths are counted.
+watchdog_env () {
+  rm -f /tmp/reboot.calls
+  local -a extra=( "$@" )
+  local -a base=(
+    UDC_DIR=/run/udc
+    REBOOT_CMD="$STUBS/reboot"
+    RSYNC_LOG=/tmp/rsync.log
+    SETUP_CONF=/tmp/none
+    BOUNDARY_WAIT_SECS=5
+    TESSIE_API_TOKEN=token
+    TESSIE_VIN=VIN
+  )
+  if [ -n "${COVERAGE:-}" ]
+  then
+    mkdir -p "$TRACE_DIR"
+    env "${base[@]}" "${extra[@]}" \
+        BASH_ENV="$COV_INIT" COV_TRACE="$TRACE_DIR/usb-link-watchdog.sh.$$.$RANDOM.trace" \
+        bash /root/bin/usb-link-watchdog.sh
+  else
+    env "${base[@]}" "${extra[@]}" bash /root/bin/usb-link-watchdog.sh
+  fi
+  WD_RC=$?
+  return 0
+}
+
 watchdog () {
   rm -f /tmp/reboot.calls
   if [ -n "${COVERAGE:-}" ]
   then
     mkdir -p "$TRACE_DIR"
     env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" \
+        RSYNC_LOG=/tmp/rsync.log SETUP_CONF=/tmp/setup.conf \
+        BOUNDARY_WAIT_SECS=5 TESSIE_API_TOKEN=token TESSIE_VIN=VIN \
         BASH_ENV="$COV_INIT" COV_TRACE="$TRACE_DIR/usb-link-watchdog.sh.$$.trace" \
         bash /root/bin/usb-link-watchdog.sh
   else
-    env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" bash /root/bin/usb-link-watchdog.sh
+    env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" \
+        RSYNC_LOG=/tmp/rsync.log SETUP_CONF=/tmp/setup.conf \
+        BOUNDARY_WAIT_SECS=5 TESSIE_API_TOKEN=token TESSIE_VIN=VIN \
+        bash /root/bin/usb-link-watchdog.sh
   fi
   WD_RC=$?
   return 0
@@ -1317,6 +1438,7 @@ assert_eq "$WD_RC" 0 "exit status 0"
 
 start_case "stalled device reboots and logs to the real /mutable log"
 set_cam_idle 45
+echo Unavailable > /tmp/dashcam_state
 watchdog
 assert_file /tmp/reboot.calls "rebooted"
 assert_file /mutable/usb-link-watchdog.log "log written to /mutable"
@@ -1325,16 +1447,21 @@ assert_file /mutable/usb-link-watchdog.last-reboot "cooldown state written"
 
 start_case "second stall inside the cooldown does not reboot again"
 set_cam_idle 45
+echo Unavailable > /tmp/dashcam_state
 watchdog
 assert_no_file /tmp/reboot.calls "no second reboot"
 assert_grep "cooldown" /mutable/usb-link-watchdog.log "logged the cooldown"
 
-start_case "real pgrep sees a running rsync and the reboot is suppressed"
+start_case "a real running rsync no longer blocks a reboot when the car is gone"
+# An earlier version skipped whenever rsync was alive. Since the upload runs for
+# hours, that made the watchdog a permanent no-op, so a stall now reboots even
+# mid-transfer once the car is confirmed to have lost the drive.
 rm -f /mutable/usb-link-watchdog.last-reboot
 set_cam_idle 45
-# a genuine process named exactly 'rsync', which is what the guard matches
+echo Unavailable > /tmp/dashcam_state
+: > /tmp/rsync.log
 cp /bin/sleep /usr/local/bin/rsync
-/usr/local/bin/rsync 30 &
+/usr/local/bin/rsync 60 &
 rsync_pid=$!
 sleep 0.3
 if pgrep -x rsync > /dev/null
@@ -1342,12 +1469,107 @@ then ok "pgrep -x rsync matches the running process"
 else not_ok "test setup failed: pgrep does not see the fake rsync"
 fi
 watchdog
-assert_no_file /tmp/reboot.calls "no reboot while rsync runs"
+assert_file /tmp/reboot.calls "rebooted despite the transfer, after waiting for a boundary"
+assert_grep "no boundary within" /mutable/usb-link-watchdog.log "waited for a file boundary first"
 kill "$rsync_pid" 2> /dev/null
 wait "$rsync_pid" 2> /dev/null
-rm -f /usr/local/bin/rsync
+rm -f /usr/local/bin/rsync /tmp/dashcam_state
 
-start_case "real findmnt sees a mounted /mnt/cam and the reboot is suppressed"
+start_case "the Tessie stub the watchdog cases rely on works"
+echo Recording > /tmp/dashcam_state
+stub_out=$(curl -s -m 5 -H 'a: b' https://api.tessie.com/x/state 2>&1)
+if jq -re '.vehicle_state.dashcam_state' <<< "$stub_out" 2>/dev/null | grep -q Recording
+then ok "it answers with parseable JSON"
+else not_ok "the stub answered '$(head -c 60 <<< "$stub_out")'"
+fi
+
+start_case "a recording car vetoes the reboot, with the real Tessie code path"
+rm -f /mutable/usb-link-watchdog.last-reboot
+set_cam_idle 45
+echo Recording > /tmp/dashcam_state
+watchdog
+assert_no_file /tmp/reboot.calls "no reboot while the car is recording"
+rm -f /tmp/dashcam_state
+
+start_case "credentials are read from the setup conf when not in the environment"
+# archiveloop normally exports them, but the timer runs the watchdog directly.
+rm -f /mutable/usb-link-watchdog.last-reboot
+set_cam_idle 45
+echo Recording > /tmp/dashcam_state
+cat > /tmp/setup.conf <<'EOF'
+export TESSIE_API_TOKEN=from-conf
+export TESSIE_VIN=VINFROMCONF
+EOF
+watchdog_env SETUP_CONF=/tmp/setup.conf TESSIE_API_TOKEN= TESSIE_VIN=
+assert_no_file /tmp/reboot.calls "found the credentials and honoured the Recording veto"
+rm -f /tmp/setup.conf
+
+start_case "a stale Recording reading is not trusted, and reboots"
+rm -f /mutable/usb-link-watchdog.last-reboot
+set_cam_idle 45
+# a Tessie answer whose reading is far too old to rely on
+cat > "$STUBS/curl" <<'EOF'
+#!/bin/bash
+ts=$(( ( $(date +%s) - 4000 ) * 1000 ))
+printf '{"state":"online","vehicle_state":{"dashcam_state":"Recording","timestamp":%s}}' "$ts"
+EOF
+chmod +x "$STUBS/curl"
+watchdog
+assert_file /tmp/reboot.calls "rebooted"
+assert_grep "too stale to trust" /mutable/usb-link-watchdog.log "said the reading was stale"
+install_tessie_stub
+
+start_case "no answer from Tessie leaves an archive in progress alone"
+rm -f /mutable/usb-link-watchdog.last-reboot
+set_cam_idle 45
+touch /tmp/tessie_down
+cp /bin/sleep /usr/local/bin/rsync
+/usr/local/bin/rsync 30 &
+rsync_pid=$!
+sleep 0.3
+watchdog
+assert_no_file /tmp/reboot.calls "no reboot while unverified and archiving"
+assert_grep "dashcam unverified" /mutable/usb-link-watchdog.log "said why"
+kill "$rsync_pid" 2> /dev/null
+wait "$rsync_pid" 2> /dev/null
+rm -f /usr/local/bin/rsync /tmp/tessie_down
+
+start_case "DRY_RUN decides everything and changes nothing"
+rm -f /mutable/usb-link-watchdog.last-reboot
+set_cam_idle 45
+echo Unavailable > /tmp/dashcam_state
+cp /bin/sleep /usr/local/bin/rsync
+/usr/local/bin/rsync 30 &
+rsync_pid=$!
+sleep 0.3
+watchdog_env DRY_RUN=1
+assert_no_file /tmp/reboot.calls "did not reboot"
+assert_grep "DRY_RUN: would reboot now" /mutable/usb-link-watchdog.log "said what it would have done"
+assert_grep "DRY_RUN: rsync active" /mutable/usb-link-watchdog.log "and that it would have waited for a boundary"
+assert_no_file /mutable/usb-link-watchdog.last-reboot "left the cooldown marker alone"
+kill "$rsync_pid" 2> /dev/null
+wait "$rsync_pid" 2> /dev/null
+rm -f /usr/local/bin/rsync /tmp/dashcam_state
+
+start_case "waits for a file boundary and proceeds once one appears"
+rm -f /mutable/usb-link-watchdog.last-reboot
+set_cam_idle 45
+echo Unavailable > /tmp/dashcam_state
+: > /tmp/rsync.log
+cp /bin/sleep /usr/local/bin/rsync
+/usr/local/bin/rsync 60 &
+rsync_pid=$!
+( sleep 6; echo "one clip done" >> /tmp/rsync.log ) &
+boundary_writer=$!
+sleep 0.3
+watchdog_env BOUNDARY_WAIT_SECS=40
+assert_grep "at file boundary" /mutable/usb-link-watchdog.log "waited for the file to finish"
+wait "$boundary_writer" 2> /dev/null
+kill "$rsync_pid" 2> /dev/null
+wait "$rsync_pid" 2> /dev/null
+rm -f /usr/local/bin/rsync /tmp/dashcam_state
+
+start_case "real findmnt sees /mnt/cam mounted, so teslausb owns the image"
 set_cam_idle 45
 if mount -t tmpfs -o size=1m none /mnt/cam 2> /dev/null
 then
@@ -1374,17 +1596,8 @@ start_case "the uptime gate holds off during early boot"
 set_cam_idle 45
 rm -f /mutable/usb-link-watchdog.last-reboot
 printf '120.00 120.00\n' > /tmp/fake-uptime
-rm -f /tmp/reboot.calls
-if [ -n "${COVERAGE:-}" ]
-then
-  env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" UPTIME_FILE=/tmp/fake-uptime \
-      BASH_ENV="$COV_INIT" COV_TRACE="$TRACE_DIR/usb-link-watchdog.sh.uptime.trace" \
-      bash /root/bin/usb-link-watchdog.sh
-else
-  env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" UPTIME_FILE=/tmp/fake-uptime \
-      bash /root/bin/usb-link-watchdog.sh
-fi
-assert_eq "$?" 0 "exits 0"
+watchdog_env UPTIME_FILE=/tmp/fake-uptime
+assert_eq "$WD_RC" 0 "exits 0"
 assert_no_file /tmp/reboot.calls "no reboot two minutes after boot"
 
 start_case "a missing cam disk is reported, not rebooted through"

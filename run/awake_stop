@@ -7,6 +7,14 @@ fi
 
 case "${SENTRY_CASE}" in
   1 | 2)
+    # Stop the keeper BEFORE the disable command below, otherwise it can race
+    # us and re-arm Sentry after the cycle has already ended.
+    if [ -e /tmp/sentry_keeper_pid ]
+    then
+      kill "$(cat /tmp/sentry_keeper_pid)" 2>/dev/null || true
+      rm -f /tmp/sentry_keeper_pid
+      log "Stopped sentry-keeper."
+    fi
     if [[ ( -n "${TESLAFI_API_TOKEN:+x}" ) ]]
     # Use TeslaFi API to disable Sentry Mode
     then

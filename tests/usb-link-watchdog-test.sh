@@ -70,7 +70,20 @@ EOF
 #!/bin/bash
 echo "reboot called" >> "${FIXTURE}/reboot_calls"
 EOF
-  chmod +x "$FIXTURE/bin/findmnt" "$FIXTURE/bin/pgrep" "$FIXTURE/bin/reboot"
+  # Tessie is asked whether the car is recording. The fixture answers with
+  # whatever a test drops in dashcam_state / dashcam_age, or nothing at all,
+  # which stands in for the API being unreachable.
+  cat > "$FIXTURE/bin/curl" <<'EOF'
+#!/bin/bash
+[ -e "${FIXTURE}/tessie_down" ] && exit 7
+state=$(cat "${FIXTURE}/dashcam_state" 2>/dev/null || echo Recording)
+age=$(cat "${FIXTURE}/dashcam_age" 2>/dev/null || echo 30)
+if [ "$state" = "malformed" ]; then echo "not json at all"; exit 0; fi
+ts=$(( ( $(date +%s) - age ) * 1000 ))
+printf '{"state":"online","vehicle_state":{"dashcam_state":"%s","timestamp":%s}}' "$state" "$ts"
+EOF
+  chmod +x "$FIXTURE/bin/findmnt" "$FIXTURE/bin/pgrep" "$FIXTURE/bin/reboot" "$FIXTURE/bin/curl"
+  : > "$FIXTURE/rsync.log"
 }
 
 teardown_fixture () {
@@ -89,6 +102,11 @@ run_watchdog () {
       LOG="$FIXTURE/mutable/usb-link-watchdog.log" \
       STATE="$FIXTURE/mutable/usb-link-watchdog.last-reboot" \
       REBOOT_CMD="$FIXTURE/bin/reboot" \
+      RSYNC_LOG="$FIXTURE/rsync.log" \
+      SETUP_CONF="$FIXTURE/setup.conf" \
+      BOUNDARY_WAIT_SECS="${BOUNDARY_WAIT_SECS:-10}" \
+      TESSIE_API_TOKEN=token TESSIE_VIN=VIN \
+      DRY_RUN="${DRY_RUN:-0}" \
       bash "$WATCHDOG"
   WATCHDOG_RC=$?
   return 0
@@ -164,6 +182,7 @@ teardown_fixture
 
 start_case "stalled: no writes for longer than the stall window"
 setup_fixture 120 configured 30
+echo Unavailable > "$FIXTURE/dashcam_state"
 run_watchdog
 assert_rebooted
 assert_rc 0
@@ -179,6 +198,7 @@ teardown_fixture
 
 start_case "just above the stall threshold reboots"
 setup_fixture 120 configured 16
+echo Unavailable > "$FIXTURE/dashcam_state"
 run_watchdog
 assert_rebooted
 teardown_fixture
@@ -199,6 +219,7 @@ teardown_fixture
 
 start_case "uptime just over the minimum reboots when stalled"
 setup_fixture 21 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
 run_watchdog
 assert_rebooted
 teardown_fixture
@@ -218,31 +239,106 @@ assert_not_rebooted
 assert_rc 0
 teardown_fixture
 
-start_case "archive mounted: stalled but must not interrupt the copy"
-setup_fixture 120 configured 60
-touch "$FIXTURE/mounted_mnt_archive"
-run_watchdog
-assert_not_rebooted
-assert_no_log
-teardown_fixture
-
-start_case "cam mounted: stalled but must not interrupt the copy"
+start_case "cam mounted: teslausb owns the image, so idleness means nothing"
 setup_fixture 120 configured 60
 touch "$FIXTURE/mounted_mnt_cam"
 run_watchdog
 assert_not_rebooted
+assert_no_log
 teardown_fixture
 
-start_case "rsync running: stalled but must not interrupt the transfer"
+start_case "the car is demonstrably recording, so a quiet image is a false alarm"
 setup_fixture 120 configured 60
-touch "$FIXTURE/rsync_running"
+echo Recording > "$FIXTURE/dashcam_state"
+echo 30 > "$FIXTURE/dashcam_age"
 run_watchdog
 assert_not_rebooted
 assert_no_log
 teardown_fixture
 
+start_case "the car has lost the drive, so a stall reboots even mid-archive"
+# This is the case an earlier version got wrong: it skipped whenever rsync was
+# alive, and since the upload runs for hours the watchdog never fired at all.
+setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
+touch "$FIXTURE/rsync_running" "$FIXTURE/mounted_mnt_archive"
+BOUNDARY_WAIT_SECS=5 run_watchdog
+assert_rebooted
+assert_log_matches "ACTION"
+teardown_fixture
+
+start_case "a stale Recording reading is not trusted as an all-clear"
+setup_fixture 120 configured 60
+echo Recording > "$FIXTURE/dashcam_state"
+echo 4000 > "$FIXTURE/dashcam_age"
+run_watchdog
+assert_rebooted
+assert_log_matches "too stale to trust"
+teardown_fixture
+
+start_case "no answer from Tessie: falls back to leaving an archive alone"
+setup_fixture 120 configured 60
+touch "$FIXTURE/tessie_down" "$FIXTURE/rsync_running"
+run_watchdog
+assert_not_rebooted
+assert_log_matches "dashcam unverified"
+teardown_fixture
+
+start_case "no answer from Tessie, and nothing in flight: reboots"
+setup_fixture 120 configured 60
+touch "$FIXTURE/tessie_down"
+run_watchdog
+assert_rebooted
+assert_log_matches "ACTION"
+teardown_fixture
+
+start_case "a malformed Tessie response is treated as no answer"
+setup_fixture 120 configured 60
+echo malformed > "$FIXTURE/dashcam_state"
+touch "$FIXTURE/rsync_running"
+run_watchdog
+assert_not_rebooted
+assert_log_matches "dashcam unverified"
+teardown_fixture
+
+start_case "waits for a file boundary before rebooting during a transfer"
+setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
+touch "$FIXTURE/rsync_running"
+# a completed file appears shortly after the wait starts
+( sleep 6; echo "sent one clip" >> "$FIXTURE/rsync.log" ) &
+boundary_writer=$!
+BOUNDARY_WAIT_SECS=30 run_watchdog
+wait "$boundary_writer" 2> /dev/null
+assert_rebooted
+assert_log_matches "at file boundary"
+teardown_fixture
+
+start_case "reboots anyway if no file boundary arrives in time"
+setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
+touch "$FIXTURE/rsync_running"
+BOUNDARY_WAIT_SECS=5 run_watchdog
+assert_rebooted
+assert_log_matches "no boundary within"
+teardown_fixture
+
+start_case "DRY_RUN decides everything but changes nothing"
+setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
+touch "$FIXTURE/rsync_running"
+DRY_RUN=1 run_watchdog
+assert_not_rebooted
+assert_log_matches "DRY_RUN: would reboot now"
+if [ -e "$FIXTURE/mutable/usb-link-watchdog.last-reboot" ]
+then not_ok "DRY_RUN wrote the cooldown marker"
+else ok "DRY_RUN left the cooldown marker alone"
+fi
+teardown_fixture
+
 start_case "cooldown: stalled again right after a reboot"
 setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
 date +%s > "$FIXTURE/mutable/usb-link-watchdog.last-reboot"
 run_watchdog
 assert_not_rebooted
@@ -252,6 +348,7 @@ teardown_fixture
 
 start_case "cooldown expired: reboots again"
 setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
 echo "$(( $(date +%s) - 31 * 60 ))" > "$FIXTURE/mutable/usb-link-watchdog.last-reboot"
 run_watchdog
 assert_rebooted
@@ -260,6 +357,7 @@ teardown_fixture
 
 start_case "corrupt state file is treated as no previous reboot"
 setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
 echo "not-a-timestamp" > "$FIXTURE/mutable/usb-link-watchdog.last-reboot"
 run_watchdog
 assert_rebooted
@@ -285,6 +383,7 @@ teardown_fixture
 
 start_case "log entries are appended, not truncated"
 setup_fixture 120 configured 60
+echo Unavailable > "$FIXTURE/dashcam_state"
 date +%s > "$FIXTURE/mutable/usb-link-watchdog.last-reboot"
 echo "pre-existing line" > "$FIXTURE/mutable/usb-link-watchdog.log"
 run_watchdog

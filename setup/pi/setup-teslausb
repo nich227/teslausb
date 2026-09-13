@@ -455,6 +455,8 @@ readonly TESLAUSB_PACKAGES=(
   libnss-mdns
   # notification scripts and tesla_api
   python3-pip
+  # the USB link watchdog and sentry-keeper both parse Tessie's JSON
+  jq
   # building the CTTS eraser
   libfuse-dev
 )

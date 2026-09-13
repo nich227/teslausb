@@ -360,6 +360,22 @@ function check_and_install_temperature_monitor () {
   return 0
 }
 
+# sentry-keeper holds Sentry Mode on for the archive window. awake_start starts
+# it and awake_stop stops it, so it only needs to be present and executable.
+function install_sentry_keeper () {
+  local install_path="$1"
+
+  if [ -z "${TESSIE_API_TOKEN:+x}" ]
+  then
+    log_progress "No Tessie token configured, skipping sentry-keeper"
+    rm -f "$install_path/sentry-keeper.sh"
+    return 0
+  fi
+
+  log_progress "Installing sentry-keeper"
+  copy_script run/sentry-keeper.sh "$install_path"
+}
+
 function install_usb_link_watchdog () {
   local install_path="$1"
 
@@ -873,3 +889,4 @@ EOF
 systemctl enable teslausb.service
 
 install_usb_link_watchdog /root/bin
+install_sentry_keeper /root/bin

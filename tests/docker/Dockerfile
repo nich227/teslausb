@@ -14,6 +14,14 @@ FROM ${BASE_IMAGE}
 # in the DietPi container image, which gives us a real systemd-analyze.
 SHELL ["/bin/bash", "-c"]
 
+# jq is the one exception to installing nothing: the USB link watchdog and
+# sentry-keeper parse Tessie's JSON with it, so without it those code paths
+# cannot run at all here. The suite separately asserts that teslausb's own setup
+# installs it, which is what covers the real device.
+RUN apt-get -q update && \
+    apt-get -q install -y --no-install-recommends jq && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /repo
 COPY . /repo
 

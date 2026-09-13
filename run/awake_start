@@ -200,6 +200,15 @@ else
           log "Awake Webhook: Failed to send command \"start\". Check if your KEEP_AWAKE_WEBHOOK_URL is set correctly. If it is, check the service receiving webhooks for logs."
         fi
       fi
+      # awake_start fires once per archive cycle. The keeper re-arms Sentry if
+      # the car clears it (shifting out of Park, for instance) before awake_stop
+      # runs, and retries an initial enable that failed with not_parked.
+      if [[ ( -n "${TESSIE_API_TOKEN:+x}" ) && ( -x /root/bin/sentry-keeper.sh ) ]]
+      then
+        /root/bin/sentry-keeper.sh &
+        echo $! > /tmp/sentry_keeper_pid
+        log "Started sentry-keeper (pid $!) to hold Sentry Mode for this cycle."
+      fi
       ;;
     3)
       # Nudge car periodically without using Sentry Mode

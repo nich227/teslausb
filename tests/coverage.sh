@@ -60,48 +60,61 @@ grep -ho '^+*COV:[^:]*:[0-9]*' "$TRACE_DIR"/* 2> /dev/null |
 #   - function definition headers
 #   - here-document bodies and their terminators
 #   - continuation lines of a command that started earlier
+# Work out which lines bash can actually report as executed, and group the lines
+# of a single logical command together.
+#
+# bash traces simple commands, and for a command spread over several lines it
+# reports the line where the command *finishes*. So a continuation group is
+# emitted as one colon-joined unit, counted once, and covered if any of its lines
+# was reported. These never appear at all and are not counted:
+#   - blank lines and comments
+#   - block structure (fi/done/else/esac/braces/then/do), including terminators
+#     carrying a redirection
+#   - function definition headers
+#   - here-document bodies and their terminators
+#   - case patterns and ;;& / ;& fallthroughs
 countable_lines () {
   awk '
     function strip(s) { sub(/^[[:blank:]]+/, "", s); sub(/[[:blank:]]+$/, "", s); return s }
+    function flush() {
+      if (group != "") { print group; group = "" }
+    }
     {
       line = $0
       s = strip(line)
 
-      # inside a here-document: skip until the terminator
       if (in_heredoc) {
         if (s == heredoc_tag) { in_heredoc = 0 }
         next
       }
 
-      # continuation of the previous logical line
       if (continued) {
-        if (s !~ /\\$/) { continued = 0 }
+        group = group ":" NR
+        if (s !~ /\\$/) { continued = 0; flush() }
         next
       }
 
-      # does this line open a here-document?
       if (match(line, /<<-?[[:blank:]]*[\x27"]?[A-Za-z_][A-Za-z0-9_]*[\x27"]?/)) {
         tag = substr(line, RSTART, RLENGTH)
         gsub(/^<<-?[[:blank:]]*/, "", tag)
         gsub(/[\x27"]/, "", tag)
         heredoc_tag = tag
         in_heredoc = 1
-        # the line itself still holds a command, so fall through and count it
-      } else if (s ~ /\\$/) {
-        continued = 1
       }
 
       if (s == "" || s ~ /^#/) next
       if (s == "fi" || s == "done" || s == "else" || s == "esac" || s == "}" || s == "{" || \
-          s == "then" || s == "do" || s == ";;" || s == "))" || s ~ /^\)/) next
-      # a block terminator carrying a redirection belongs to the compound
-      # command, which bash traces on its opening line instead
+          s == "then" || s == "do" || s == ";;" || s == ";&" || s == ";;&" || s == "))" || s ~ /^\)/) next
       if (s ~ /^(done|fi|esac|\})[[:blank:]]*([0-9]*[<>&]|\|)/) next
-      # function headers are not traced
       if (s ~ /^function[[:blank:]]/ || s ~ /^[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\([[:blank:]]*\)/) next
+      # a case pattern: something ending in ) with no command before it
+      if (s ~ /^[^(){};&]*\)$/ && s !~ /=/) next
 
-      print NR
+      group = NR
+      if (s ~ /\\$/) { continued = 1; next }
+      flush()
     }
+    END { flush() }
   ' "$1"
 }
 
@@ -121,14 +134,23 @@ do
   lines=0
   hit=0
   missed=""
-  while IFS= read -r n
+  while IFS= read -r group
   do
     lines=$(( lines + 1 ))
-    if grep -qx "${base}:${n}" "$executed" 2> /dev/null
+    covered=0
+    for n in ${group//:/ }
+    do
+      if grep -qx "${base}:${n}" "$executed" 2> /dev/null
+      then
+        covered=1
+        break
+      fi
+    done
+    if [ "$covered" = 1 ]
     then
       hit=$(( hit + 1 ))
     else
-      missed="$missed $n"
+      missed="$missed ${group%%:*}"
     fi
   done < <(countable_lines "$path")
 
