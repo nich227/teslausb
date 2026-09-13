@@ -119,16 +119,22 @@ else
 fi
 
 # The prebuilt Raspberry Pi OS image had SSH enabled out of the box (pi-gen
-# touched /boot/ssh). Keep that guarantee: -1 would disable SSH entirely and
-# leave a headless device unreachable.
+# touched /boot/ssh), and a device that lives in a car has no other way in.
+#
+# Mind the values, which are not intuitive: 0 means none/custom, -1 is Dropbear
+# and -2 is OpenSSH. DietPi images ship with 0, so an unattended first boot
+# actually REMOVES the pre-installed Dropbear and leaves the device unreachable.
+# Ask for OpenSSH unless a real server has already been chosen.
 ssh_index=$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' "$BOOT/dietpi.txt")
-if [ -z "$ssh_index" ] || [ "$ssh_index" = "-1" ]
-then
-  # missing or explicitly disabled: a headless device in a car needs SSH
-  set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX 0
-else
-  log "dietpi.txt: leaving AUTO_SETUP_SSH_SERVER_INDEX as it is ($ssh_index)"
-fi
+case "$ssh_index" in
+  -1|-2)
+    log "dietpi.txt: leaving AUTO_SETUP_SSH_SERVER_INDEX as it is ($ssh_index)"
+    ;;
+  *)
+    # 0, missing, or anything unexpected: no SSH server would be installed
+    set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX -2
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Wifi, if the config asks for it. This is what makes a wifi-only board work on

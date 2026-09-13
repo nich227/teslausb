@@ -221,6 +221,40 @@ do
   fi
 done
 
+start_case "the UDC check can only be bypassed deliberately"
+# QEMU has no USB device controller, so without a bypass setup stops before doing
+# anything. It must stay fatal by default, because a real device that cannot
+# present a drive is useless.
+udc_fn=$(sed -n '/^function check_udc/,/^}/p' "$REPO/setup/pi/verify-configuration.sh")
+assert_grep "SKIP_UDC_CHECK" "$REPO/setup/pi/verify-configuration.sh" "a named bypass exists"
+if grep -q 'SKIP_UDC_CHECK:-false' <<< "$udc_fn"
+then ok "it defaults to off, so real hardware still stops"
+else not_ok "the bypass does not default to off"
+fi
+# drive the function both ways with an empty /sys/class/udc stand-in
+run_udc_check () {
+  (
+    setup_progress () { echo "$*"; }
+    # shellcheck disable=SC2317
+    eval "${udc_fn/\/sys\/class\/udc//tmp/emptyudc}"
+    check_udc
+  ) 2>&1
+}
+mkdir -p /tmp/emptyudc
+if out=$(run_udc_check) && [ -z "$out" ]
+then not_ok "the check passed with no UDC and no bypass"
+else ok "stops when there is no UDC: $(head -1 <<< "$out" | cut -c1-40)..."
+fi
+out=$(SKIP_UDC_CHECK=true run_udc_check)
+if grep -q "continuing anyway" <<< "$out"
+then ok "continues with SKIP_UDC_CHECK=true, and warns"
+else not_ok "the bypass did not take effect: $out"
+fi
+if grep -q "cannot present a USB drive" <<< "$out"
+then ok "and says what that means"
+else not_ok "the warning does not explain the consequence"
+fi
+
 start_case "the pi-gen image pipeline is gone"
 assert_no_file "$REPO/pi-gen-sources/pi-gen-config" "pi-gen config removed"
 if [ -d "$REPO/pi-gen-sources" ]
@@ -668,6 +702,38 @@ install_fake_setup
 run_driver
 assert_grep "Setup appears not to have completed" /tmp/driver.log "warned about the missing config"
 
+start_case "staged sources are used instead of downloading from GitHub"
+# Without this, setup fetches the published tarball and quietly tests whatever is
+# on GitHub rather than the working tree.
+setup_driver_env
+install_fake_setup
+mkdir -p /boot/teslausb-local /tmp/srcstage/setup/pi
+printf '#!/bin/bash\necho "staged setup ran" >> /tmp/setup.calls\ntouch /teslausb/TESLAUSB_SETUP_FINISHED\n' \
+  > /tmp/srcstage/setup/pi/setup-teslausb
+tar -cf /boot/teslausb-local/repo.tar -C /tmp/srcstage setup
+rm -f /root/bin/setup-teslausb /tmp/curl.calls
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+run_driver
+assert_grep "Using the sources staged in" /tmp/driver.log "used the staged tree"
+assert_no_file /tmp/curl.calls "downloaded nothing"
+if grep -q "staged setup ran" /tmp/setup.calls 2> /dev/null
+then ok "ran the staged setup script"
+else not_ok "did not run the staged setup script"
+fi
+rm -rf /boot/teslausb-local /tmp/srcstage
+
+start_case "a corrupt staged archive falls back to downloading"
+setup_driver_env
+install_fake_setup
+mkdir -p /boot/teslausb-local
+echo "this is not a tar file" > /boot/teslausb-local/repo.tar
+rm -f /root/bin/setup-teslausb
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+run_driver
+assert_grep "could not unpack the staged sources" /tmp/driver.log "noticed and said so"
+assert_file /tmp/curl.calls "fell back to fetching"
+rm -rf /boot/teslausb-local
+
 start_case "wifi credentials from the teslausb config are handed to DietPi"
 setup_driver_env
 install_fake_setup
@@ -888,24 +954,33 @@ then ok "credentials are not world readable"
 else not_ok "credential file mode is $(stat -c %a /tmp/bootfs/dietpi-wifi.txt)"
 fi
 
-start_case "SSH is not left disabled on a headless device"
+start_case "DietPi's default of 'no SSH server' is corrected"
+# The values are counter-intuitive: 0 is none/custom, -1 Dropbear, -2 OpenSSH.
+# Images ship with 0, which makes DietPi REMOVE the pre-installed Dropbear during
+# its first run, leaving a headless device with no way in at all.
 fake_boot_partition
-sed -i 's/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=-1/' /tmp/bootfs/dietpi.txt
+grep -q "AUTO_SETUP_SSH_SERVER_INDEX" /tmp/bootfs/dietpi.txt || \
+  echo "AUTO_SETUP_SSH_SERVER_INDEX=0" >> /tmp/bootfs/dietpi.txt
 run_prepare /tmp/bootfs /tmp/my.conf
-assert_grep "AUTO_SETUP_SSH_SERVER_INDEX=0" /tmp/bootfs/dietpi.txt "re-enabled SSH"
+assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
+  "-2" "asked for OpenSSH instead of none"
 
 start_case "SSH is configured even when the key is absent from dietpi.txt"
 fake_boot_partition
 grep -v AUTO_SETUP_SSH_SERVER_INDEX /tmp/bootfs/dietpi.txt > /tmp/dt && cp /tmp/dt /tmp/bootfs/dietpi.txt
 run_prepare /tmp/bootfs /tmp/my.conf
 assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
-  "0" "SSH server index added"
+  "-2" "SSH server index added"
 
-start_case "an SSH server the user chose is left alone"
-fake_boot_partition
-sed -i 's/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=-2/' /tmp/bootfs/dietpi.txt
-run_prepare /tmp/bootfs /tmp/my.conf
-assert_grep "AUTO_SETUP_SSH_SERVER_INDEX=-2" /tmp/bootfs/dietpi.txt "kept the user's choice"
+start_case "a real SSH server the user chose is left alone"
+for chosen in -1 -2
+do
+  fake_boot_partition
+  sed -i "s/^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0/AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0\nAUTO_SETUP_SSH_SERVER_INDEX=$chosen/" /tmp/bootfs/dietpi.txt
+  run_prepare /tmp/bootfs /tmp/my.conf
+  assert_eq "$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' /tmp/bootfs/dietpi.txt)" \
+    "$chosen" "kept the user's choice of $chosen"
+done
 
 start_case "existing dietpi.txt settings are preserved"
 fake_boot_partition
@@ -926,7 +1001,7 @@ dietpi_read () {
 assert_eq "$(dietpi_read AUTO_SETUP_CUSTOM_SCRIPT_EXEC)" "1" "DietPi reads the custom script flag as 1"
 assert_eq "$(dietpi_read AUTO_SETUP_NET_HOSTNAME)" "teslausb-model3" "DietPi reads the hostname"
 assert_eq "$(dietpi_read AUTO_SETUP_NET_WIFI_COUNTRY_CODE)" "NL" "DietPi reads the country code"
-assert_eq "$(dietpi_read AUTO_SETUP_SSH_SERVER_INDEX)" "0" "DietPi reads the SSH server index"
+assert_eq "$(dietpi_read AUTO_SETUP_SSH_SERVER_INDEX)" "-2" "DietPi reads the SSH server index (OpenSSH)"
 
 start_case "DietPi will not stop for the interactive first run setup"
 # dietpi-login line 140 decides this with exactly this expression:

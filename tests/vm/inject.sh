@@ -130,15 +130,21 @@ debugfs -w -R "write $STAGING/grub.cfg /boot/grub/grub.cfg" "$PART" 2>&1 | grep 
 # but set it so the log is honest about what is on the image.
 debugfs -w -R "sif /boot/Automation_Custom_Script.sh mode 0100755" "$PART" &> /dev/null || true
 
-# teslausb's own scripts, so the VM tests the working tree instead of whatever
-# is on GitHub. The bootstrap picks these up if they are present.
-log "installing the local teslausb scripts for an offline install"
+# The working tree, so the VM tests these sources rather than whatever is
+# published on GitHub. Earlier runs downloaded the upstream tarball and quietly
+# exercised pre-port code, rc.local and all. first-boot.sh unpacks this and
+# points SOURCE_DIR at it, which makes teslausb's copy_script skip downloading.
+log "staging the working tree for an offline install"
 debugfs -w -R "mkdir /boot/teslausb-local" "$PART" &> /dev/null || true
-for f in /repo/setup/pi/first-boot.sh /repo/setup/pi/teslausb-setup.service
+tar -cf /tmp/repo.tar -C /repo \
+  --exclude=.git --exclude=node_modules --exclude='._*' \
+  setup run dietpi tools tests check.sh 2> /dev/null
+for f in /repo/setup/pi/first-boot.sh /repo/setup/pi/teslausb-setup.service /tmp/repo.tar
 do
   debugfs -w -R "rm /boot/teslausb-local/$(basename "$f")" "$PART" &> /dev/null || true
   debugfs -w -R "write $f /boot/teslausb-local/$(basename "$f")" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
 done
+log "staged $(du -h /tmp/repo.tar | cut -f1) of sources"
 
 # DNS override.
 #
@@ -222,6 +228,20 @@ debugfs -w -R "symlink /etc/systemd/system/getty.target.wants/serial-getty@ttyS0
 # /etc/bashrc.d/dietpi.bash, which calls dietpi-login for any interactive login
 # shell, and the image autologs into tty1 to make that happen. Masking tty1
 # stops first run setup dead.
+
+# Ask DietPi for OpenSSH.
+#
+# The values are counter-intuitive: 0 is none/custom, -1 Dropbear, -2 OpenSSH.
+# Images ship with 0, so DietPi's software phase REMOVES the pre-installed
+# Dropbear and the VM becomes unreachable half way through a run, which is
+# exactly what happened before this was set.
+log "asking DietPi for OpenSSH (index -2)"
+if grep -q '^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=' "$STAGING/dietpi.txt"
+then
+  sed -i 's|^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=.*|AUTO_SETUP_SSH_SERVER_INDEX=-2|' "$STAGING/dietpi.txt"
+else
+  echo 'AUTO_SETUP_SSH_SERVER_INDEX=-2' >> "$STAGING/dietpi.txt"
+fi
 
 # Skip DietPi's own update phase.
 #

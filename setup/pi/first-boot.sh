@@ -276,6 +276,28 @@ then
     mkdir "/root/bin"
   fi
 
+  # A staged copy of the sources on the boot partition wins over GitHub. This is
+  # what makes an offline install possible, and it is how the VM test exercises
+  # the working tree rather than whatever happens to be published. teslausb's own
+  # copy_script skips downloading entirely when SOURCE_DIR is set.
+  if [ -f /boot/teslausb-local/repo.tar ]
+  then
+    setup_progress "Using the sources staged in /boot/teslausb-local/repo.tar"
+    rm -rf /root/teslausb-src
+    mkdir -p /root/teslausb-src
+    if tar -xf /boot/teslausb-local/repo.tar -C /root/teslausb-src
+    then
+      export SOURCE_DIR=/root/teslausb-src
+      if [ -f "$SOURCE_DIR/setup/pi/setup-teslausb" ]
+      then
+        install -m 755 "$SOURCE_DIR/setup/pi/setup-teslausb" /root/bin/setup-teslausb
+      fi
+    else
+      setup_progress "WARNING: could not unpack the staged sources; falling back to GitHub"
+      rm -rf /root/teslausb-src
+    fi
+  fi
+
   if [ ! -e "/root/bin/setup-teslausb" ]
   then
     REPO=${REPO:-nich227}

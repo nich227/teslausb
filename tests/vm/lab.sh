@@ -140,6 +140,7 @@ export OS_PASSWORD='${VM_PASSWORD}'
 export TESLAUSB_HOSTNAME=teslausb
 export UPGRADE_PACKAGES=false
 export SKIP_READONLY=true
+export SKIP_UDC_CHECK=true
 export CAM_SIZE=2G
 export MUSIC_SIZE=0
 EOF
@@ -156,6 +157,7 @@ export OS_PASSWORD='${VM_PASSWORD}'
 export TESLAUSB_HOSTNAME=teslausb
 export UPGRADE_PACKAGES=false
 export SKIP_READONLY=true
+export SKIP_UDC_CHECK=true
 export CAM_SIZE=2G
 export MUSIC_SIZE=0
 EOF

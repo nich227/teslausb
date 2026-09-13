@@ -40,6 +40,16 @@ function check_udc () {
   udc=$(find /sys/class/udc -type l -prune | wc -l)
   if [ "$udc" = "0" ]
   then
+    # A machine with no USB device controller cannot present itself as a drive,
+    # so this is fatal on real hardware. It is bypassable only for testing in a
+    # VM, where QEMU emulates USB host controllers but no device controller:
+    # everything except the gadget can still be exercised there.
+    if [ "${SKIP_UDC_CHECK:-false}" = "true" ]
+    then
+      setup_progress "WARNING: no UDC driver, continuing anyway because SKIP_UDC_CHECK=true."
+      setup_progress "WARNING: this device cannot present a USB drive to the car. Only set this in a VM."
+      return 0
+    fi
     setup_progress "STOP: this device ($(cat /sys/firmware/devicetree/base/model)) does not have a UDC driver"
     exit 1
   fi
