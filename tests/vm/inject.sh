@@ -51,8 +51,24 @@ debugfs -R "dump /boot/dietpi.txt $STAGING/dietpi.txt" "$PART" 2> /dev/null
 # --- run the real thing ---------------------------------------------------
 # This is the same script a user runs against a freshly flashed card, which is
 # the point: the VM tests that script's output rather than a copy of it.
-log "running tools/prepare-boot-partition.sh"
-/repo/tools/prepare-boot-partition.sh "$STAGING" "$CONF" | sed 's/^/    /'
+#
+# TESLAUSB_BOOTSTRAP=0 prepares a plain DietPi instead, which is what the lab's
+# NAS needs: it is a machine on the network to archive to, not a second teslausb.
+if [ "${TESLAUSB_BOOTSTRAP:-1}" = 1 ]
+then
+  log "running tools/prepare-boot-partition.sh"
+  /repo/tools/prepare-boot-partition.sh "$STAGING" "$CONF" | sed 's/^/    /'
+else
+  log "plain DietPi (no teslausb bootstrap)"
+  for kv in AUTO_SETUP_AUTOMATED=1 "AUTO_SETUP_GLOBAL_PASSWORD=${VM_PASSWORD:-teslausb-lab}"
+  do
+    key=${kv%%=*}
+    if grep -q "^${key}=" "$STAGING/dietpi.txt"
+    then sed -i "s|^${key}=.*|${kv}|" "$STAGING/dietpi.txt"
+    else printf '%s\n' "$kv" >> "$STAGING/dietpi.txt"
+    fi
+  done
+fi
 
 # --- extra dietpi.txt keys for the test environment -----------------------
 # Applied after the production script has run, so the test can pin things the
@@ -134,6 +150,8 @@ debugfs -w -R "sif /boot/Automation_Custom_Script.sh mode 0100755" "$PART" &> /d
 # published on GitHub. Earlier runs downloaded the upstream tarball and quietly
 # exercised pre-port code, rc.local and all. first-boot.sh unpacks this and
 # points SOURCE_DIR at it, which makes teslausb's copy_script skip downloading.
+if [ "${TESLAUSB_BOOTSTRAP:-1}" = 1 ]
+then
 log "staging the working tree for an offline install"
 debugfs -w -R "mkdir /boot/teslausb-local" "$PART" &> /dev/null || true
 tar -cf /tmp/repo.tar -C /repo \
@@ -145,6 +163,7 @@ do
   debugfs -w -R "write $f /boot/teslausb-local/$(basename "$f")" "$PART" 2>&1 | grep -iv "^debugfs\|^$" || true
 done
 log "staged $(du -h /tmp/repo.tar | cut -f1) of sources"
+fi
 
 # DNS override.
 #

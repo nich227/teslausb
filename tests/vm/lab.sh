@@ -70,6 +70,7 @@ readonly DEVICE_SSH_PORT=2230
 readonly NAS_SSH_PORT=2231
 readonly VM_PASSWORD=teslausb-lab
 
+readonly NAS_HOSTNAME=teslanas
 readonly SHARE_NAME=teslacam
 readonly SHARE_USER=teslausb
 readonly SHARE_PASS=archivepass
@@ -185,6 +186,13 @@ readonly TEST_KEY="$CACHE_DIR/teslausb-vm-key"
 # only configures one interface, so this goes in as an interfaces.d snippet.
 prepare_vm () {
   local role="$1" ip="$2" conf="$3" out="$4"
+  # the NAS is a plain DietPi with a share on it, not a second teslausb
+  local bootstrap=1 hostname_key="AUTO_SETUP_NET_HOSTNAME=teslausb"
+  if [ "$role" = nas ]
+  then
+    bootstrap=0
+    hostname_key="AUTO_SETUP_NET_HOSTNAME=$NAS_HOSTNAME"
+  fi
 
   cat > "$RUN_DIR/eth1.conf" <<EOF
 # private lab segment, shared only with the other lab VM
@@ -203,6 +211,9 @@ EOF
     -e "CONF=${conf:-/repo/tests/vm/vm-test.conf}" \
     -e "SSH_PUBKEY=/cache/$(basename "$TEST_KEY").pub" \
     -e "EXTRA_INTERFACES=/run-dir/eth1.conf" \
+    -e "TESLAUSB_BOOTSTRAP=$bootstrap" \
+    -e "VM_PASSWORD=$VM_PASSWORD" \
+    -e "DIETPI_EXTRA_KEYS=$hostname_key" \
     -e "OUT_IMAGE=/cache/$(basename "$out")" \
     -e "HOST_UID=$(id -u)" \
     -e "HOST_GID=$(id -g)" \
