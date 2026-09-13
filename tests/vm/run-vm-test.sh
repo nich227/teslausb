@@ -50,6 +50,7 @@ TIMEOUT=900
 DISTRO=Bookworm
 JUMP_HOST=""
 VM_DNS=""
+LOGIN_SHELL=bash
 STATIC_IP=""
 STATIC_MASK="255.255.255.0"
 STATIC_GW=""
@@ -66,6 +67,7 @@ do
     --timeout)   TIMEOUT="$2"; shift 2 ;;
     --distro)    DISTRO="$2"; shift 2 ;;
     --jump-host) JUMP_HOST="$2"; shift 2 ;;
+    --shell)     LOGIN_SHELL="$2"; shift 2 ;;
     --dns)       VM_DNS="$2"; shift 2 ;;
     --static-ip) STATIC_IP="$2"; shift 2 ;;
     --mask)      STATIC_MASK="$2"; shift 2 ;;
@@ -453,6 +455,24 @@ then
   then
     log "advancing DietPi's first run setup (log: $FIRSTRUN_LOG)"
     advance_first_run
+  fi
+
+  # A friendlier login shell for interactive use. The automation always calls
+  # bash explicitly, because DietPi triggers first run setup from
+  # /etc/bashrc.d/dietpi.bash, which only bash sources.
+  if [ "$LOGIN_SHELL" != bash ]
+  then
+    log "setting the login shell to $LOGIN_SHELL"
+    ssh_vm "command -v $LOGIN_SHELL > /dev/null || { DEBIAN_FRONTEND=noninteractive apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq -y install $LOGIN_SHELL; }" > /dev/null 2>&1
+    shell_bin=$(ssh_vm "command -v $LOGIN_SHELL")
+    if [ -n "$shell_bin" ]
+    then
+      ssh_vm "grep -qxF '$shell_bin' /etc/shells || echo '$shell_bin' >> /etc/shells"
+      ssh_vm "chsh -s '$shell_bin' root; id dietpi > /dev/null 2>&1 && chsh -s '$shell_bin' dietpi"
+      ok "login shell is now $(ssh_vm 'getent passwd root | cut -d: -f7')"
+    else
+      not_ok "could not install $LOGIN_SHELL"
+    fi
   fi
 
   # what the bootstrap should have done, from its own log on the boot partition

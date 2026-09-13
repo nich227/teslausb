@@ -39,6 +39,7 @@ readonly RUN_DIR="${TMPDIR:-/tmp}/teslausb-lab"
 
 KEEP=0
 ARCHIVE=cifs
+LOGIN_SHELL=bash
 TIMEOUT=1800
 DISTRO=Bookworm
 
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]
 do
   case "$1" in
     --keep)     KEEP=1; shift ;;
+    --shell)    LOGIN_SHELL="$2"; shift 2 ;;
     --archive)  ARCHIVE="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
     --distro)   DISTRO="$2"; shift 2 ;;
@@ -309,6 +311,46 @@ advance_first_run () {
   return 1
 }
 
+
+# Give the development VMs a friendlier login shell if asked.
+#
+# This deliberately does not change how the harness drives DietPi: DietPi
+# triggers its first run setup from /etc/bashrc.d/dietpi.bash, which only bash
+# sources, so the automation always calls bash explicitly. The login shell
+# affects interactive use only.
+set_login_shell () {
+  local where="$1" shell="$2" bin
+  [ -n "$shell" ] && [ "$shell" != bash ] || return 0
+
+  local runner=on_device
+  [ "$where" = nas ] && runner=on_nas
+
+  # DietPi's own first run setup and teslausb setup both use apt, so the lock is
+  # often held; wait for it and retry rather than reporting a spurious failure.
+  local _attempt
+  for _attempt in 1 2 3 4 5 6
+  do
+    bin=$("$runner" "command -v $shell")
+    [ -n "$bin" ] && break
+    "$runner" "for i in \$(seq 1 60); do fuser /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || break; sleep 5; done
+               DEBIAN_FRONTEND=noninteractive apt-get -qq update > /dev/null 2>&1
+               DEBIAN_FRONTEND=noninteractive apt-get -qq -y install $shell > /dev/null 2>&1" > /dev/null 2>&1
+    bin=$("$runner" "command -v $shell")
+    [ -n "$bin" ] && break
+    sleep 20
+  done
+  if [ -z "$bin" ]
+  then
+    step "could not install $shell on the $where"
+    return 0
+  fi
+
+  "$runner" "grep -qxF '$bin' /etc/shells || echo '$bin' >> /etc/shells"
+  "$runner" "chsh -s '$bin' root"
+  "$runner" "id dietpi > /dev/null 2>&1 && chsh -s '$bin' dietpi"
+  step "$where now logs in with $("$runner" 'getent passwd root | cut -d: -f7')"
+}
+
 log "waiting for both VMs to answer (up to ${TIMEOUT}s)"
 wait_for nas 120 || { echo "FATAL: the NAS never came up; see $RUN_DIR/nas-serial.log" >&2; exit 1; }
 ok "the NAS is up"
@@ -318,6 +360,13 @@ ok "the device is up"
 log "letting DietPi finish its own setup on both"
 advance_first_run nas || step "the NAS did not reach install stage 2; carrying on"
 advance_first_run device || step "the device did not reach install stage 2; carrying on"
+
+if [ "$LOGIN_SHELL" != bash ]
+then
+  log "setting the login shell to $LOGIN_SHELL on both VMs"
+  set_login_shell nas "$LOGIN_SHELL"
+  set_login_shell device "$LOGIN_SHELL"
+fi
 
 # ---------------------------------------------------------------------------
 log "the private segment"
