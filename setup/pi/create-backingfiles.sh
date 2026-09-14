@@ -315,10 +315,82 @@ then
   fi
 fi
 
+# Tesla reads a few things straight from the root of the drive: LockChime.wav for
+# the custom lock sound, and a Boombox folder for external speaker sounds. None of
+# that is teslausb's doing, they are simply files on the drive, which means
+# rebuilding a card silently loses them and the car goes back to its stock chime.
+#
+# Anything left in /boot/teslausb-cam-root, which survives on the boot partition
+# and can be put there before the very first boot, is copied into the drive's root
+# when the drive is made. Existing files are left alone, so a car that has since
+# been given a different chime is not overwritten on a later setup run.
+function seed_cam_disk_root () {
+  local image="$1"
+  local staging=/boot/teslausb-cam-root
+  local mountpoint=/tmp/camseed
+  local offset loopdev copied=0
+
+  if [ ! -d "$staging" ] || [ -z "$(ls -A "$staging" 2> /dev/null)" ]
+  then
+    return 0
+  fi
+
+  if [ ! -e "$image" ]
+  then
+    log_progress "no cam drive to seed"
+    return 0
+  fi
+
+  offset=$(first_partition_offset "$image")
+  loopdev=$(losetup_find_show -o "$offset" "$image") || {
+    log_progress "WARNING: could not attach $image to seed the drive root"
+    return 0
+  }
+
+  mkdir -p "$mountpoint"
+  if mount "$loopdev" "$mountpoint" 2> /dev/null
+  then
+    local f name
+    for f in "$staging"/*
+    do
+      name=$(basename "$f")
+      # Skip the resource forks a Mac leaves behind when copying to exFAT.
+      case "$name" in ._*) continue ;; esac
+      if [ -e "$mountpoint/$name" ]
+      then
+        log_progress "$name is already on the drive, leaving it"
+        continue
+      fi
+      if cp -r "$f" "$mountpoint/$name"
+      then
+        log_progress "put $name in the root of the cam drive"
+        copied=$(( copied + 1 ))
+      else
+        log_progress "WARNING: could not copy $name onto the cam drive"
+      fi
+    done
+    sync
+    umount "$mountpoint" || log_progress "WARNING: could not unmount $mountpoint"
+  else
+    log_progress "WARNING: could not mount the cam drive to seed it"
+  fi
+  losetup -d "$loopdev" || true
+  rmdir "$mountpoint" 2> /dev/null || true
+
+  if [ "$copied" -gt 0 ]
+  then
+    log_progress "seeded $copied file(s) into the cam drive root"
+  fi
+}
+
 # shut down everything that might be using any of the drive images
 release_all_images
 
 add_drive "cam" "CAM" "$CAM_DISK_SIZE" "$CAM_DISK_FILE_NAME" "$USE_EXFAT"
+if [ "$CAM_DISK_SIZE" -ne 0 ]
+then
+  seed_cam_disk_root "$CAM_DISK_FILE_NAME"
+fi
 if [ "$CAM_DISK_SIZE" -eq 0 ]
 then
   rm -rf "$BACKINGFILES_MOUNTPOINT/snapshots" &> /dev/null
