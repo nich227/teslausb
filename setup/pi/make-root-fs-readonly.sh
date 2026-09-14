@@ -53,6 +53,15 @@ systemctl disable apt-daily-upgrade.timer
 # consistent, and clean up the mount and fstab entry if anything is left. This
 # lives here rather than only in the DietPi bootstrap script so that installs
 # started by hand are covered too.
+# dietpi-software is happy to sit and wait. In an environment without systemd it
+# stalls indefinitely on "uninstall", and an interrupted test run left hour-old
+# orphans of it behind. Setup runs unattended from a systemd unit, so every call
+# gets a closed stdin and a deadline, and the end state is made sure of with apt
+# afterwards regardless of what dietpi-software managed.
+function dietpi_software () {
+  timeout "${DIETPI_SOFTWARE_TIMEOUT:-600}" /boot/dietpi/dietpi-software "$@" < /dev/null
+}
+
 function remove_dietpi_ramlog () {
   if ! grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab 2> /dev/null &&
      ! findmnt -t tmpfs /var/log > /dev/null 2>&1
@@ -64,7 +73,7 @@ function remove_dietpi_ramlog () {
   log_progress "Removing DietPi-RAMlog so teslausb can own /var/log"
   if [ -x /boot/dietpi/dietpi-software ]
   then
-    /boot/dietpi/dietpi-software uninstall 103 || \
+    dietpi_software uninstall 103 || \
       log_progress "WARNING: dietpi-software uninstall 103 failed"
   fi
 
@@ -98,7 +107,7 @@ log_progress "Removing unwanted packages..."
 # was not installed through DietPi.
 if [ -x /boot/dietpi/dietpi-software ]
 then
-  /boot/dietpi/dietpi-software uninstall 101 102 &> /dev/null || \
+  dietpi_software uninstall 101 102 &> /dev/null || \
     log_progress "WARNING: could not uninstall Logrotate/Rsyslog via dietpi-software"
 fi
 apt-get remove -y --purge triggerhappy logrotate dphys-swapfile

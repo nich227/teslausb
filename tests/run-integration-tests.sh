@@ -66,7 +66,16 @@ log "integration tests in DietPi $DISTRO ($ARCH)"
 # suite mount a real tmpfs so the archive-in-progress guard is exercised against
 # a genuine mount rather than a stub. It applies only to this throwaway
 # container.
-docker run --rm \
+# Named, and removed on the way out. Interrupting or timing out a "docker run"
+# kills the client but leaves the container running: five of them were found still
+# going hours later, each stuck inside dietpi-software.
+container="teslausb-test-$$"
+cleanup_container () {
+  docker rm -f "$container" > /dev/null 2>&1 || true
+}
+trap cleanup_container EXIT INT TERM
+
+docker run --rm --name "$container" \
   --cap-add=SYS_ADMIN \
   --security-opt apparmor=unconfined \
   -e "COVERAGE=${COVERAGE:-1}" \

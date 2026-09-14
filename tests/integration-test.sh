@@ -385,7 +385,7 @@ rm -f /tmp/dietpi-software.calls
   # shellcheck disable=SC2329
   log_progress () { echo "ro: $*"; }
   # point the function at the stub instead of the real dietpi-software
-  eval "$(sed -n '/^function remove_dietpi_ramlog/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh" |
+  eval "$(sed -n '/^function dietpi_software/,/^}/p;/^function remove_dietpi_ramlog/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh" |
           sed 's|/boot/dietpi/dietpi-software|/tmp/fakedietpi/dietpi-software|g')"
   remove_dietpi_ramlog
 ) > /tmp/ramlog.log 2>&1
@@ -411,7 +411,7 @@ rm -f /tmp/dietpi-software.calls
   # called by the function eval'd in below
   # shellcheck disable=SC2329
   log_progress () { echo "ro: $*"; }
-  eval "$(sed -n '/^function remove_dietpi_ramlog/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh" |
+  eval "$(sed -n '/^function dietpi_software/,/^}/p;/^function remove_dietpi_ramlog/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh" |
           sed 's|/boot/dietpi/dietpi-software|/tmp/fakedietpi/dietpi-software|g')"
   remove_dietpi_ramlog
 ) > /tmp/ramlog2.log 2>&1
@@ -1805,7 +1805,7 @@ banner "openssh replaces dropbear"
 # ===========================================================================
 # DietPi ships dropbear. teslausb needs OpenSSH, because its rsync archive backend
 # shells out to ssh and dropbear provides dbclient instead.
-openssh_fn=$(sed -n '/^function package_installed/,/^}/p;/^function ensure_openssh/,/^}/p' \
+openssh_fn=$(sed -n '/^function dietpi_software/,/^}/p;/^function package_installed/,/^}/p;/^function ensure_openssh/,/^}/p' \
   "$REPO/setup/pi/setup-teslausb")
 
 run_ensure_openssh () {
@@ -1887,6 +1887,66 @@ start_case "it gives up loudly if openssh cannot be installed"
 run_ensure_openssh no yes fail
 assert_eq "$ENSURE_RC" 1 "exits 1 rather than carrying on without an ssh server"
 assert_grep "STOP: could not install openssh-server" /tmp/openssh.progress "says why"
+
+start_case "a dietpi-software that never returns cannot stall setup"
+# dietpi-software waits indefinitely in an environment without systemd. An
+# interrupted test run left five of them running for hours, each stuck on
+# "uninstall 104", so every call now has a closed stdin and a deadline.
+assert_grep "timeout .*DIETPI_SOFTWARE_TIMEOUT" "$REPO/setup/pi/setup-teslausb" \
+  "the calls are bounded by a timeout"
+assert_grep "< /dev/null" "$REPO/setup/pi/setup-teslausb" "and cannot wait on input"
+assert_eq "$(grep -c "^ *dietpi_software " "$REPO/setup/pi/make-root-fs-readonly.sh")" 2 \
+  "the readonly script's two calls go through the same helper"
+
+rm -f /tmp/apt.calls /tmp/systemctl.calls /tmp/openssh.progress /tmp/openssh.installed /tmp/dropbear.purged
+printf '#!/bin/bash\nsleep 300\n' > /boot/dietpi/dietpi-software
+chmod +x /boot/dietpi/dietpi-software
+started=$(date +%s)
+run_ensure_openssh_hanging () {
+  cat > "$STUBS/dpkg-query" <<'DQ'
+#!/bin/bash
+case "$*" in
+  *openssh-server*) [ -f /tmp/openssh.installed ] && echo "install ok installed" || echo "unknown ok not-installed" ;;
+  *dropbear-bin*)   [ -f /tmp/dropbear.purged ] && echo "unknown ok not-installed" || echo "install ok installed" ;;
+  *) echo "unknown ok not-installed" ;;
+esac
+exit 0
+DQ
+  cat > "$STUBS/apt-get" <<'AG'
+#!/bin/bash
+echo "apt-get $*" >> /tmp/apt.calls
+case "$*" in
+  *"install openssh-server"*) touch /tmp/openssh.installed ;;
+  *"purge dropbear"*)         touch /tmp/dropbear.purged ;;
+esac
+exit 0
+AG
+  printf '#!/bin/bash\necho "systemctl $*" >> /tmp/systemctl.calls\nexit 0\n' > "$STUBS/systemctl"
+  printf '#!/bin/bash\nexit 1\n' > "$STUBS/pgrep"
+  chmod +x "$STUBS/dpkg-query" "$STUBS/apt-get" "$STUBS/systemctl" "$STUBS/pgrep"
+  (
+    # shellcheck disable=SC2329
+    setup_progress () { echo "$*" >> /tmp/openssh.progress; }
+    export DIETPI_SOFTWARE_TIMEOUT=2
+    eval "$openssh_fn"
+    ensure_openssh
+  ) && HANG_RC=0 || HANG_RC=$?
+  rm -f "$STUBS/dpkg-query" "$STUBS/pgrep"
+}
+run_ensure_openssh_hanging
+elapsed=$(( $(date +%s) - started ))
+assert_eq "$HANG_RC" 0 "it still finishes"
+if [ "$elapsed" -lt 60 ]
+then ok "and gives up on dietpi-software quickly (${elapsed}s, not the 300s it was sleeping)"
+else not_ok "it waited ${elapsed}s for a hanging dietpi-software"
+fi
+assert_grep "install openssh-server" /tmp/apt.calls "falls back to apt for the install"
+assert_grep "purge dropbear" /tmp/apt.calls "and still removes dropbear"
+assert_grep "WARNING: dietpi-software could not" /tmp/openssh.progress "and says dietpi-software did not manage it"
+if pgrep -f "[d]ietpi-software" > /dev/null
+then not_ok "a dietpi-software process was left behind"
+else ok "no dietpi-software process is left behind"
+fi
 
 start_case "the boot partition asks DietPi for openssh, never dropbear"
 assert_grep "set_dietpi_key AUTO_SETUP_SSH_SERVER_INDEX -2" "$REPO/tools/prepare-boot-partition.sh" \

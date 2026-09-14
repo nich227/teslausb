@@ -467,6 +467,15 @@ readonly TESLAUSB_PACKAGES=(
   libfuse-dev
 )
 
+# dietpi-software is happy to sit and wait. In an environment without systemd it
+# stalls indefinitely on "uninstall", and an interrupted test run left hour-old
+# orphans of it behind. Setup runs unattended from a systemd unit, so every call
+# gets a closed stdin and a deadline, and the end state is made sure of with apt
+# afterwards regardless of what dietpi-software managed.
+function dietpi_software () {
+  timeout "${DIETPI_SOFTWARE_TIMEOUT:-600}" /boot/dietpi/dietpi-software "$@" < /dev/null
+}
+
 function package_installed () {
   dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q "install ok installed"
 }
@@ -491,10 +500,10 @@ function ensure_openssh () {
   # the case during first boot, hence the check.
   if [ -x /boot/dietpi/dietpi-software ] && ! pgrep -f '/boot/dietpi/dietpi-software' > /dev/null
   then
-    # stdin from /dev/null: setup runs unattended from a systemd unit, and a tool
-    # that decides to ask a question must not be able to stall it forever.
-    /boot/dietpi/dietpi-software install 105 < /dev/null &> /dev/null || true
-    /boot/dietpi/dietpi-software uninstall 104 < /dev/null &> /dev/null || true
+    dietpi_software install 105 &> /dev/null || \
+      setup_progress "WARNING: dietpi-software could not install OpenSSH; carrying on with apt"
+    dietpi_software uninstall 104 &> /dev/null || \
+      setup_progress "WARNING: dietpi-software could not remove Dropbear; carrying on with apt"
   fi
 
   # Then make sure of the end state regardless of what DietPi managed. Dropbear
