@@ -273,6 +273,37 @@ else
   log "WARNING: without a keyboard, DietPi's first run may never start."
 fi
 
+# ---------------------------------------------------------------------------
+# Keep DietPi from expanding the root partition over the whole card.
+#
+# teslausb puts its backing files in unpartitioned space and refuses to install with
+# less than 32GiB of it. DietPi expands the root filesystem to fill the card on first
+# boot, which leaves none, and setup stops after printing a one-partition table.
+# /dietpi_skip_partition_resize is DietPi's own marker for skipping that.
+# ---------------------------------------------------------------------------
+if [ -d "$rootfs_root/etc" ]
+then
+  if [ ! -e "$rootfs_root/dietpi_skip_partition_resize" ]
+  then
+    log "keeping DietPi from expanding the root partition over the free space"
+    : > "$rootfs_root/dietpi_skip_partition_resize"
+  fi
+
+  # Skipping the expansion is only half of it. The images ship a root filesystem of
+  # a few hundred megabytes, and DietPi's own apt upgrade does not fit in that: it
+  # runs out of space part way through and the first run fails.
+  root_kb=$(df -k --output=size "$rootfs_root" 2> /dev/null | tail -1 | tr -d ' ')
+  if [ -n "${root_kb:-}" ] && [ "$root_kb" -lt 3000000 ]
+  then
+    log "WARNING: the root filesystem is only $(( root_kb / 1024 ))MB, and expansion has"
+    log "WARNING: just been disabled to leave room for teslausb. DietPi's own first run"
+    log "WARNING: needs more than that for its apt upgrade. Grow the root partition to"
+    log "WARNING: about 8GB before booting, leaving its start sector alone, for example:"
+    log "WARNING:   printf '%s,%s\\n' START \$(( 8 * 1024 * 1024 * 2 )) | sfdisk --force -N2 /dev/DEVICE"
+    log "WARNING:   e2fsck -fp /dev/DEVICEp2 && resize2fs /dev/DEVICEp2"
+  fi
+fi
+
 echo
 echo "Log in as 'root' or 'dietpi' (DietPi has no 'pi' user), with the password"
 echo "from AUTO_SETUP_GLOBAL_PASSWORD in dietpi.txt."
