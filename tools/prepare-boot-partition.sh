@@ -65,7 +65,23 @@ log () { echo "==> $*"; }
 # Otherwise it is a firmware partition, and the root filesystem beside it has to
 # be mounted to put the config where it will be read.
 # ---------------------------------------------------------------------------
+# Two destinations, because DietPi and teslausb read from different places on the
+# Raspberry Pi images:
+#
+#   TARGET          DietPi's own files: dietpi.txt, dietpi-wifi.txt and
+#                   Automation_Custom_Script.sh, all read from /boot, which on
+#                   those images is on the root filesystem.
+#   TESLAUSB_TARGET teslausb's own files: the config and anything staged for the
+#                   cam drive. first-boot.sh points /teslausb at /boot/firmware
+#                   when that partition exists, and looks for its config there, so
+#                   these belong on the partition a PC can see. That also puts the
+#                   setup log somewhere readable from a card reader, which matters
+#                   when a device in a car will not come up.
+#
+# On single-partition images the two are the same directory and none of this
+# applies.
 TARGET="$BOOT"
+TESLAUSB_TARGET="$BOOT"
 ROOTFS_MOUNT=""
 
 cleanup_rootfs () {
@@ -97,7 +113,7 @@ then
     mount "$rootfs_dev" "$ROOTFS_MOUNT" || \
       die "could not mount $rootfs_dev. This needs root, and a Linux machine, because
      the root filesystem is ext4."
-    log "mounted $rootfs_dev to write the config where DietPi reads it"
+    log "mounted $rootfs_dev to write DietPi's config where it reads it"
     TARGET="$ROOTFS_MOUNT/boot"
   fi
 
@@ -151,7 +167,7 @@ OS_PASSWORD=$(conf_value OS_PASSWORD "")
 # Copy the teslausb pieces
 # ---------------------------------------------------------------------------
 log "installing teslausb_setup_variables.conf"
-install -m 600 "$CONF" "$TARGET/teslausb_setup_variables.conf"
+install -m 600 "$CONF" "$TESLAUSB_TARGET/teslausb_setup_variables.conf"
 
 log "installing Automation_Custom_Script.sh"
 install -m 755 "$REPO/dietpi/Automation_Custom_Script.sh" "$TARGET/Automation_Custom_Script.sh"
@@ -326,8 +342,8 @@ conf_dir="$(cd "$(dirname "$CONF")" && pwd)"
 if [ -d "$conf_dir/teslausb-cam-root" ]
 then
   log "staging $(find "$conf_dir/teslausb-cam-root" -type f | wc -l) file(s) for the cam drive root"
-  rm -rf "$TARGET/teslausb-cam-root"
-  cp -r "$conf_dir/teslausb-cam-root" "$TARGET/teslausb-cam-root"
+  rm -rf "$TESLAUSB_TARGET/teslausb-cam-root"
+  cp -r "$conf_dir/teslausb-cam-root" "$TESLAUSB_TARGET/teslausb-cam-root"
 fi
 
 echo

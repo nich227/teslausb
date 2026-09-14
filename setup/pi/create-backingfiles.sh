@@ -326,7 +326,12 @@ fi
 # been given a different chime is not overwritten on a later setup run.
 function seed_cam_disk_root () {
   local image="$1"
-  local staging=/boot/teslausb-cam-root
+  # /teslausb is the boot partition as teslausb sees it: first-boot.sh points it at
+  # /boot/firmware on images that have one, and at /boot otherwise. Staging goes
+  # there, so this looks there too, with /boot as a fallback for anything prepared
+  # before that distinction existed.
+  local staging=/teslausb/teslausb-cam-root
+  [ -d "$staging" ] || staging=/boot/teslausb-cam-root
   local mountpoint=/tmp/camseed
   local offset loopdev copied=0
 

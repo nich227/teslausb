@@ -1699,8 +1699,8 @@ run_seed () {
   # stubs stand in for the loop device: mount succeeds and the copy lands in the
   # mountpoint, which is what the assertions then look at
   : > /tmp/seed.progress
-  rm -rf /tmp/camseed /boot/teslausb-cam-root
-  mkdir -p /tmp/camseed /boot/teslausb-cam-root
+  rm -rf /tmp/camseed /teslausb/teslausb-cam-root
+  mkdir -p /tmp/camseed /teslausb/teslausb-cam-root
   "$@" # caller stages files
   ( # shellcheck disable=SC2329
     log_progress () { echo "$*" >> /tmp/seed.progress; }
@@ -1730,23 +1730,23 @@ assert_eq "$(find /tmp/camseed -mindepth 1 | wc -l)" 0 "copies nothing"
 assert_eq "$(grep -c . /tmp/seed.progress || true)" 0 "and says nothing"
 
 start_case "a staged lock chime is put in the drive root"
-run_seed sh -c 'printf RIFFfake > /boot/teslausb-cam-root/LockChime.wav'
+run_seed sh -c 'printf RIFFfake > /teslausb/teslausb-cam-root/LockChime.wav'
 assert_eq "$SEED_RC" 0 "exits 0"
 assert_file /tmp/camseed/LockChime.wav "the chime lands in the root of the drive"
 assert_eq "$(cat /tmp/camseed/LockChime.wav)" RIFFfake "with its contents intact"
 assert_grep "put LockChime.wav in the root of the cam drive" /tmp/seed.progress "says what it did"
 
 start_case "a Boombox folder comes across too, not just single files"
-run_seed sh -c 'mkdir -p /boot/teslausb-cam-root/Boombox && echo beep > /boot/teslausb-cam-root/Boombox/horn.wav'
+run_seed sh -c 'mkdir -p /teslausb/teslausb-cam-root/Boombox && echo beep > /teslausb/teslausb-cam-root/Boombox/horn.wav'
 assert_eq "$(cat /tmp/camseed/Boombox/horn.wav 2>/dev/null)" beep "directories are copied recursively"
 
 start_case "the resource forks a Mac leaves behind are ignored"
-run_seed sh -c 'printf RIFFfake > /boot/teslausb-cam-root/LockChime.wav; printf junk > /boot/teslausb-cam-root/._LockChime.wav'
+run_seed sh -c 'printf RIFFfake > /teslausb/teslausb-cam-root/LockChime.wav; printf junk > /teslausb/teslausb-cam-root/._LockChime.wav'
 assert_file /tmp/camseed/LockChime.wav "the real file is copied"
 assert_no_file /tmp/camseed/._LockChime.wav "the ._ fork is not"
 
 start_case "a chime already on the drive is left alone"
-run_seed sh -c 'printf new > /boot/teslausb-cam-root/LockChime.wav'
+run_seed sh -c 'printf new > /teslausb/teslausb-cam-root/LockChime.wav'
 printf 'existing' > /tmp/camseed/LockChime.wav
 ( # shellcheck disable=SC2329
   log_progress () { echo "$*" >> /tmp/seed.progress; }
@@ -1769,13 +1769,13 @@ assert_eq "$(cat /tmp/camseed/LockChime.wav)" existing "a car given a different 
 assert_grep "already on the drive" /tmp/seed.progress "and says so"
 
 start_case "a drive that cannot be mounted is reported, not ignored"
-run_seed sh -c 'SEED_MOUNT_FAILS=1; printf x > /boot/teslausb-cam-root/LockChime.wav'
-SEED_MOUNT_FAILS=1 run_seed sh -c 'printf x > /boot/teslausb-cam-root/LockChime.wav'
+run_seed sh -c 'SEED_MOUNT_FAILS=1; printf x > /teslausb/teslausb-cam-root/LockChime.wav'
+SEED_MOUNT_FAILS=1 run_seed sh -c 'printf x > /teslausb/teslausb-cam-root/LockChime.wav'
 assert_eq "$SEED_RC" 0 "setup carries on"
 assert_grep "WARNING: could not mount" /tmp/seed.progress "with a warning"
 
 start_case "and a missing image is not fatal either"
-run_seed sh -c 'printf x > /boot/teslausb-cam-root/LockChime.wav'
+run_seed sh -c 'printf x > /teslausb/teslausb-cam-root/LockChime.wav'
 ( # shellcheck disable=SC2329
   log_progress () { echo "$*" >> /tmp/seed.progress; }
   eval "$seed_fn"
@@ -1783,7 +1783,7 @@ run_seed sh -c 'printf x > /boot/teslausb-cam-root/LockChime.wav'
 ) > /dev/null 2>&1 && rc=0 || rc=1
 assert_eq "$rc" 0 "exits 0"
 assert_grep "no cam drive to seed" /tmp/seed.progress "says there was nothing to seed"
-rm -rf /boot/teslausb-cam-root /tmp/camseed /tmp/fake_cam_disk.bin
+rm -rf /teslausb/teslausb-cam-root /tmp/camseed /tmp/fake_cam_disk.bin
 
 start_case "the seeding runs when the cam drive is made"
 assert_grep "seed_cam_disk_root" "$REPO/setup/pi/create-backingfiles.sh" "create-backingfiles calls it"
