@@ -35,6 +35,49 @@ function check_supported_hardware () {
   exit 1
 }
 
+# DietPi publishes a different image per instruction set, and which one suits a
+# board is not obvious: the ARMv7 image is recommended only for the Pi 2 Model B
+# v1.1, while every 64-bit capable board, including the Pi Zero 2 W, is meant to
+# use the ARMv8 one. The ARMv6 image boots on all of them, so an unsuitable choice
+# runs rather than failing, just slower and with 32-bit only packages.
+#
+# This is advice, not a gate. teslausb works either way, and someone may have
+# chosen 32-bit deliberately to save memory on a 512MB board.
+function check_image_architecture () {
+  local model userland recommended
+  [ -r /sys/firmware/devicetree/base/model ] || return 0
+  model=$(tr -d '\0' < /sys/firmware/devicetree/base/model)
+  # The userland is what the image decides; a 64-bit kernel can carry a 32-bit
+  # userland, so uname would not answer this.
+  userland=$(dpkg --print-architecture 2> /dev/null || echo unknown)
+
+  case "$model" in
+    *"Raspberry Pi 5"*)                     recommended="DietPi_RPi5-ARMv8"   ;;
+    *"Raspberry Pi Zero 2"*|\
+    *"Raspberry Pi 4"*|\
+    *"Raspberry Pi 3"*|\
+    *"Compute Module 4"*|\
+    *"Compute Module 3"*)                   recommended="DietPi_RPi234-ARMv8" ;;
+    *"Raspberry Pi Zero"*|*"Raspberry Pi Model"*|*"Compute Module 1"*)
+      # ARMv6 boards have no 64-bit option at all, so there is nothing to advise.
+      return 0
+      ;;
+    *) return 0 ;;
+  esac
+
+  if [ "$userland" = arm64 ]
+  then
+    setup_progress "running the 64-bit userland DietPi recommends for '$model'"
+    return 0
+  fi
+
+  setup_progress "NOTE: this is a 32-bit ($userland) DietPi image on '$model'."
+  setup_progress "NOTE: DietPi recommends ${recommended} for this board, which is 64-bit."
+  setup_progress "NOTE: teslausb works either way, so nothing needs changing. 32-bit uses"
+  setup_progress "NOTE: slightly less memory, which can be worth having on a 512MB board,"
+  setup_progress "NOTE: at the cost of packages that are increasingly 64-bit only."
+}
+
 function check_udc () {
   local udc
   udc=$(find /sys/class/udc -type l -prune | wc -l)
@@ -174,6 +217,7 @@ function check_setup_teslausb () {
 }
 
 check_supported_hardware
+check_image_architecture
 
 check_udc
 

@@ -1684,6 +1684,64 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+banner "the image architecture advisory"
+# ===========================================================================
+# DietPi ships one image per instruction set and which one suits a board is not
+# obvious: the ARMv7 image is for the Pi 2 Model B v1.1 only, while every 64-bit
+# capable board, the Pi Zero 2 W included, is meant to use ARMv8. The ARMv6 image
+# boots on all of them, so a poor choice runs rather than failing. teslausb works
+# either way, so this advises and never blocks.
+arch_fn=$(sed -n '/^function check_image_architecture/,/^}/p' "$REPO/setup/pi/verify-configuration.sh")
+
+run_arch_check () {
+  # $1: device tree model, $2: dpkg architecture
+  # created empty rather than removed, so "said nothing" is countable
+  : > /tmp/arch.progress
+  mkdir -p /tmp/fakedt
+  printf '%s\0' "$1" > /tmp/fakedt/model
+  printf '#!/bin/bash\necho "%s"\n' "$2" > "$STUBS/dpkg"
+  chmod +x "$STUBS/dpkg"
+  (
+    # shellcheck disable=SC2329
+    setup_progress () { echo "$*" >> /tmp/arch.progress; }
+    # both references to the device tree path, not just the first
+    eval "${arch_fn//\/sys\/firmware\/devicetree\/base\/model//tmp/fakedt/model}"
+    check_image_architecture
+  ) && ARCH_RC=0 || ARCH_RC=$?
+  rm -f "$STUBS/dpkg"
+}
+
+start_case "a 32-bit image on a 64-bit capable board is flagged"
+for model in "Raspberry Pi Zero 2 W Rev 1.0" "Raspberry Pi 4 Model B Rev 1.4" "Raspberry Pi 3 Model B Plus Rev 1.3" "Raspberry Pi 400 Rev 1.0"
+do
+  run_arch_check "$model" armhf
+  assert_eq "$ARCH_RC" 0 "advises without failing on '$model'"
+  assert_grep "DietPi recommends DietPi_RPi234-ARMv8" /tmp/arch.progress "names the image DietPi recommends for '$model'"
+done
+
+start_case "and the Pi 5 gets its own image named"
+run_arch_check "Raspberry Pi 5 Model B Rev 1.0" armhf
+assert_grep "DietPi recommends DietPi_RPi5-ARMv8" /tmp/arch.progress "points at the Pi 5 image"
+
+start_case "a 64-bit image on those boards says so and stops there"
+run_arch_check "Raspberry Pi Zero 2 W Rev 1.0" arm64
+assert_eq "$ARCH_RC" 0 "exits 0"
+assert_grep "running the 64-bit userland DietPi recommends" /tmp/arch.progress "confirms the choice"
+assert_eq "$(grep -c "NOTE:" /tmp/arch.progress || true)" 0 "and advises nothing"
+
+start_case "ARMv6 boards are left alone, having no 64-bit option"
+for model in "Raspberry Pi Zero W Rev 1.1" "Raspberry Pi Model B Plus Rev 1.2"
+do
+  run_arch_check "$model" armhf
+  assert_eq "$ARCH_RC" 0 "exits 0 for '$model'"
+  assert_eq "$(grep -c . /tmp/arch.progress || true)" 0 "says nothing about '$model'"
+done
+
+start_case "and so is hardware it knows nothing about"
+run_arch_check "ROCK Pi 4C Plus" arm64
+assert_eq "$(grep -c . /tmp/arch.progress || true)" 0 "no advice for a non-Pi board"
+
+# ===========================================================================
 banner "the access point is built on hostapd, not NetworkManager"
 # ===========================================================================
 # DietPi manages the client connection with ifupdown and wpa_supplicant. The
