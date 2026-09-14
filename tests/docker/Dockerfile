@@ -18,7 +18,14 @@ SHELL ["/bin/bash", "-c"]
 # sentry-keeper parse Tessie's JSON with it, so without it those code paths
 # cannot run at all here. The suite separately asserts that teslausb's own setup
 # installs it, which is what covers the real device.
-RUN apt-get -q update && \
+# /tmp has to be world writable with the sticky bit, as it is on a real device. The
+# rootfs is extracted with "debugfs rdump", which does not reproduce it faithfully, and
+# apt's gpgv method drops to the unprivileged _apt user to verify signatures: with a /tmp
+# it cannot write to, it fails to create its temporary config, reports every repository
+# as "not signed" and exits 100. That happens on the CI runner but not on a workstation,
+# so it looked like a network problem for a while.
+RUN mkdir -p /tmp && chmod 1777 /tmp && \
+    apt-get -q update && \
     apt-get -q install -y --no-install-recommends jq && \
     rm -rf /var/lib/apt/lists/*
 
