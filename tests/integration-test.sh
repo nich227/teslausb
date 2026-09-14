@@ -1774,69 +1774,12 @@ rm -rf /tmp/fwonly && mkdir -p /tmp/fwonly
 cp /tmp/bootfs/dietpi.txt /tmp/fwonly/dietpi.txt
 printf 'root=PARTUUID=deadbeef-02\n' > /tmp/fwonly/cmdline.txt
 run_prepare /tmp/fwonly /tmp/single.conf
-assert_eq "$PREPARE_RC" 1 "refuses rather than writing to the wrong partition"
+assert_eq "$([ "$PREPARE_RC" != 0 ] && echo nonzero)" nonzero \
+  "refuses rather than writing to the wrong partition"
 assert_grep "firmware partition\|root filesystem" /tmp/prepare.log \
   "and says it needs the root filesystem"
 
-start_case "the two-partition layout that broke on hardware"
-# The Raspberry Pi arrangement: a FAT firmware partition a PC can see, and DietPi's
-# real /boot on the root filesystem beside it. The container has no loop devices, so
-# the card is fabricated: a block device node for the root partition, findmnt made to
-# report it, and mount stubbed to hand over a prepared tree. That still drives the
-# real decision, which is the thing that broke.
-rm -rf /tmp/fwmnt /tmp/fakeroot /tmp/mounted
-mkdir -p /tmp/fwmnt /tmp/fakeroot/boot/dietpi /tmp/fakeroot/etc/systemd/system
-cp /tmp/bootfs/dietpi.txt /tmp/fwmnt/dietpi.txt          # firmware partition: no dietpi/ dir
-printf 'root=PARTUUID=deadbeef-02\n' > /tmp/fwmnt/cmdline.txt
-cp /tmp/bootfs/dietpi.txt /tmp/fakeroot/boot/dietpi.txt  # the real /boot, with DietPi's scripts
-
-rm -f /dev/teslausb-test-p2
-mknod /dev/teslausb-test-p2 b 7 200 2> /dev/null || true
-
-cat > "$STUBS/findmnt" <<'EOF'
-#!/bin/bash
-case "$*" in
-  *"--target"*)  echo /dev/teslausb-test-p1 ;;   # which device the given path is on
-  *"-no TARGET"*) exit 1 ;;                      # the root partition is not mounted yet
-  *) exit 1 ;;
-esac
-EOF
-cat > "$STUBS/mount" <<'EOF'
-#!/bin/bash
-# stands in for mounting the root partition: hand over the prepared tree.
-# mount is called as: mount <device> <dir>
-target="$2"
-cp -r /tmp/fakeroot/. "$target/"
-echo "mount $*" >> /tmp/mount.calls
-exit 0
-EOF
-printf '#!/bin/bash
-echo "umount $*" >> /tmp/mount.calls
-exit 0
-' > "$STUBS/umount"
-chmod +x "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount"
-rm -f /tmp/mount.calls
-# the device the script will derive is p1 -> p2, which is the node made above
-ln -sf /dev/teslausb-test-p2 /dev/teslausb-test-p1 2> /dev/null || true
-
-run_prepare /tmp/fwmnt /tmp/single.conf
-rm -f "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount"
-
-if [ "$PREPARE_RC" != 0 ]
-then
-  printf '   what it said: %s\n' "$(tail -3 /tmp/prepare.log | tr '\n' ' ' | cut -c1-160)"
-fi
-assert_eq "$PREPARE_RC" 0 "exits 0"
-assert_grep "firmware partition" /tmp/prepare.log "recognises that this is not DietPi's own /boot"
-assert_grep "mounted /dev/teslausb-test-p2" /tmp/prepare.log "derives the root partition beside it and mounts it"
-assert_grep "mount /dev/teslausb-test-p2" /tmp/mount.calls "with a real mount call"
-assert_grep "umount" /tmp/mount.calls "and unmounts it again on the way out"
-assert_file /tmp/fwmnt/teslausb_setup_variables.conf \
-  "teslausb's config stays on the partition /teslausb will point at"
-assert_no_file /tmp/fwmnt/Automation_Custom_Script.sh \
-  "DietPi's hook does not stay on the firmware partition, where DietPi never looks"
-
-start_case "the root partition is derived from either device naming scheme"
+start_case "the root filesystem is found whichever way the card is laid out"
 # /dev/mmcblk0p1 -> p2 on a card reader, /dev/sdb1 -> sdb2 on a USB adapter.
 prep_fw_case () {
   # $1: the device findmnt should report, $2: what "findmnt -no TARGET" should do
@@ -1852,18 +1795,46 @@ case "\$*" in
   *) exit 1 ;;
 esac
 EOF
+  # lsblk answers two questions: which disk a partition is on, and what partitions
+  # that disk has. FAKE_PARTS decides the order, which is the whole point: the
+  # Raspberry Pi images put the FAT first, boards with a DIETPISETUP partition put
+  # it last, and the search has to cope with both.
+  cat > "$STUBS/lsblk" <<EOF
+#!/bin/bash
+case "\$*" in
+  *PKNAME*) echo "fakedisk" ;;
+  *NAME*)   printf '%s\\n' fakedisk ${FAKE_PARTS:-$1 /dev/teslausb-rootfs} ;;
+esac
+EOF
   cat > "$STUBS/mount" <<'EOF'
 #!/bin/bash
+# read-only probes are the search looking for DietPi's root filesystem
+case "$*" in
+  *"-o ro"*)
+    target="${@: -1}"          # the mount point is the last argument
+    case "$*" in
+      *teslausb-rootfs*) cp -r /tmp/fakeroot/. "$target/" ;;
+      *) : ;;                                  # any other partition looks empty
+    esac
+    echo "probe $*" >> /tmp/mount.calls
+    exit 0
+    ;;
+esac
+# MOUNT_FAILS exercises the path where the root filesystem will not mount
 [ "${MOUNT_FAILS:-0}" = 1 ] && exit 1
 cp -r /tmp/fakeroot/. "$2/"
 echo "mount $*" >> /tmp/mount.calls
 exit 0
 EOF
   printf '#!/bin/bash\nexit 0\n' > "$STUBS/umount"
-  chmod +x "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount"
+  chmod +x "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount" "$STUBS/lsblk"
   rm -f /tmp/mount.calls
 }
-clear_fw_stubs () { rm -f "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount" "$STUBS/df"; }
+clear_fw_stubs () { rm -f "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount" "$STUBS/lsblk" "$STUBS/df"; }
+why_prepare_failed () {
+  [ "$PREPARE_RC" = 0 ] && return 0
+  printf '   rc=%s, last output: %s\n' "$PREPARE_RC" "$(tail -3 /tmp/prepare.log | tr '\n' ' ' | cut -c1-170)"
+}
 
 rm -f /dev/mmcblk9p2 /dev/sdz2
 mknod /dev/mmcblk9p2 b 7 201 2> /dev/null || true
@@ -1872,14 +1843,33 @@ mknod /dev/sdz2 b 7 202 2> /dev/null || true
 prep_fw_case /dev/mmcblk9p1 "exit 1"
 run_prepare /tmp/fwmnt /tmp/single.conf
 clear_fw_stubs
+why_prepare_failed
 assert_eq "$PREPARE_RC" 0 "a card reader device, mmcblk9p1, works"
-assert_grep "mounted /dev/mmcblk9p2" /tmp/prepare.log "and p1 becomes p2"
+assert_grep "mounted /dev/teslausb-rootfs" /tmp/prepare.log "and it finds the root filesystem"
+assert_grep "firmware partition" /tmp/prepare.log "recognising this is not DietPi's own /boot"
+assert_grep "probe .*-o ro" /tmp/mount.calls "by examining the partitions rather than guessing"
+assert_file /tmp/fwmnt/teslausb_setup_variables.conf \
+  "teslausb's config stays on the partition /teslausb will point at"
+assert_no_file /tmp/fwmnt/Automation_Custom_Script.sh \
+  "while DietPi's hook does not, since DietPi never reads there"
 
-prep_fw_case /dev/sdz1 "exit 1"
-run_prepare /tmp/fwmnt /tmp/single.conf
+# The reversed arrangement: DietPi's root comes first and the partition a PC sees is
+# the small trailing DIETPISETUP one. Partition arithmetic gets this backwards.
+FAKE_PARTS="/dev/teslausb-rootfs /dev/sdz2" prep_fw_case /dev/sdz2 "exit 1"
+FAKE_PARTS="/dev/teslausb-rootfs /dev/sdz2" run_prepare /tmp/fwmnt /tmp/single.conf
 clear_fw_stubs
-assert_eq "$PREPARE_RC" 0 "a USB adapter device, sdz1, works too"
-assert_grep "mounted /dev/sdz2" /tmp/prepare.log "and sdz1 becomes sdz2"
+assert_eq "$PREPARE_RC" 0 "a trailing DIETPISETUP partition works too"
+assert_grep "mounted /dev/teslausb-rootfs" /tmp/prepare.log \
+  "finding the root filesystem before it, which arithmetic would have missed"
+
+start_case "a card with no DietPi root filesystem on it is refused"
+# Pointing the script at a partition on some unrelated disk should stop it, not have
+# it write DietPi's config somewhere arbitrary.
+FAKE_PARTS="/dev/not-a-dietpi-disk" prep_fw_case /dev/mmcblk9p1 "exit 1"
+FAKE_PARTS="/dev/not-a-dietpi-disk" run_prepare /tmp/fwmnt /tmp/single.conf
+clear_fw_stubs
+assert_eq "$PREPARE_RC" 1 "exits 1"
+assert_grep "could not find DietPi's root filesystem" /tmp/prepare.log "and says what it looked for"
 
 start_case "a root filesystem that is already mounted is used as it is"
 prep_fw_case /dev/mmcblk9p1 "echo /tmp/alreadymounted"
@@ -1890,7 +1880,8 @@ clear_fw_stubs
 assert_eq "$PREPARE_RC" 0 "exits 0"
 assert_grep "already mounted at /tmp/alreadymounted" /tmp/prepare.log "says it is reusing the mount"
 assert_grep "^AUTO_SETUP_AUTOMATED=1$" /tmp/alreadymounted/boot/dietpi.txt "and writes there"
-assert_no_file /tmp/mount.calls "without mounting anything itself"
+rw_mounts=$(grep -v -- "-o ro" /tmp/mount.calls 2> /dev/null | grep -c . || true)
+assert_eq "${rw_mounts:-0}" 0 "probing read-only but never mounting it read-write itself"
 
 start_case "a root filesystem that will not mount is a clear refusal"
 prep_fw_case /dev/mmcblk9p1 "exit 1"

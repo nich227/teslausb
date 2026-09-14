@@ -55,15 +55,25 @@ log () { echo "==> $*"; }
 # On the Raspberry Pi images it is not the partition you can see from a PC. Those
 # use the Debian layout, where the FAT partition is mounted at /boot/firmware and
 # /boot lives on the root filesystem, and DietPi reads /boot/dietpi.txt,
-# /boot/dietpi-wifi.txt and /boot/Automation_Custom_Script.sh from there. The FAT
-# partition carries its own copies, but nothing reads them, so configuring only
-# what a PC can see leaves a device that boots into an interactive DietPi with no
-# network. That happened on real hardware; the single-partition images used for
-# testing hid it, because there /boot is on the root filesystem already.
+# /boot/dietpi-wifi.txt and /boot/Automation_Custom_Script.sh from there.
 #
-# So: if the given partition carries DietPi's own scripts, it is the real thing.
-# Otherwise it is a firmware partition, and the root filesystem beside it has to
-# be mounted to put the config where it will be read.
+# DietPi does normally copy those three files across for you, in
+# fs_partition_resize.sh, which imports them from the FAT partition (or from a
+# trailing partition labelled DIETPISETUP on boards whose root is ext4). The catch
+# is that the import sits in the same branch as the root filesystem expansion:
+#
+#   if [[ -f '/dietpi_skip_partition_resize' ]]; then rm -v ...   # skips both
+#   elif ... else  ...import...  ; sfdisk ... <<< ',+'  ; fi
+#
+# teslausb has to disable that expansion, because it needs the unpartitioned space
+# for its backing files, and doing so skips the import along with it. A card
+# configured only where a PC can see therefore boots into an interactive DietPi with
+# no network, which is what happened on real hardware.
+#
+# So the config is written where DietPi reads it, rather than relying on an import
+# that teslausb itself prevents. If the given partition carries DietPi's own
+# scripts, it is already that place. Otherwise the root filesystem on the same disk
+# is found and mounted.
 # ---------------------------------------------------------------------------
 # Two destinations, because DietPi and teslausb read from different places on the
 # Raspberry Pi images:
@@ -97,12 +107,33 @@ then
   log "this is a firmware partition; DietPi reads its config from the root filesystem"
   boot_source=$(findmnt -no SOURCE --target "$BOOT") || \
     die "cannot work out which device $BOOT is on"
-  case "$boot_source" in
-    *[0-9]p[0-9]) rootfs_dev="${boot_source%p*}p$(( ${boot_source##*p} + 1 ))" ;;
-    *[0-9])       rootfs_dev="${boot_source%[0-9]}$(( ${boot_source##*[a-z]} + 1 ))" ;;
-    *) die "cannot work out the root partition next to $boot_source" ;;
-  esac
-  [ -b "$rootfs_dev" ] || die "expected the root filesystem on $rootfs_dev, which does not exist"
+  disk=$(lsblk -npo PKNAME "$boot_source" 2> /dev/null | head -1)
+  [ -n "$disk" ] || die "cannot work out which disk $boot_source belongs to"
+  [ -b "/dev/$disk" ] && disk="/dev/$disk"
+
+  # Look for the root filesystem rather than guessing at partition numbers. On the
+  # Raspberry Pi images the FAT partition comes first and the root is the one after
+  # it, but on boards whose root is ext4 DietPi ships a small trailing partition
+  # labelled DIETPISETUP instead, and there the root is the partition *before* it.
+  # Arithmetic gets one of those wrong, so each candidate is examined instead.
+  rootfs_dev=""
+  probe=$(mktemp -d)
+  for candidate in $(lsblk -lnpo NAME "$disk" | tail -n +2)
+  do
+    [ "$candidate" = "$boot_source" ] && continue
+    mount -o ro "$candidate" "$probe" 2> /dev/null || continue
+    if [ -f "$probe/boot/dietpi.txt" ] && [ -d "$probe/boot/dietpi" ]
+    then
+      rootfs_dev="$candidate"
+    fi
+    umount "$probe" 2> /dev/null || true
+    [ -n "$rootfs_dev" ] && break
+  done
+  rmdir "$probe" 2> /dev/null || true
+
+  [ -n "$rootfs_dev" ] || \
+    die "could not find DietPi's root filesystem on $disk. Looked for a partition
+     with boot/dietpi.txt and boot/dietpi on it."
 
   if existing=$(findmnt -no TARGET "$rootfs_dev" 2> /dev/null) && [ -n "$existing" ]
   then
