@@ -1,0 +1,132 @@
+name: lab
+
+# The two-VM lab: a real DietPi device installed from scratch, and a NAS it
+# archives to. This is the only test that exercises the whole thing the way a user
+# does, so it runs on anything that touches the install or the archive path.
+#
+# What one run covers: DietPi's own first boot including its apt upgrade, the
+# teslausb bootstrap, the full setup including partitioning and the backing files,
+# openssh replacing dropbear, mDNS, the web interface, and a clip travelling from
+# the cam disk to the NAS and arriving intact.
+#
+# It needs nested virtualisation. GitHub's Linux runners expose /dev/kvm, but only
+# to members of the kvm group, hence the udev rule below. Without KVM the lab falls
+# back to emulation and takes far too long, so the run checks and fails early.
+
+on:
+  push:
+    paths:
+      - 'setup/**'
+      - 'run/**'
+      - 'tools/**'
+      - 'dietpi/**'
+      - 'tests/vm/**'
+      - '.github/workflows/lab.yml'
+  pull_request:
+    paths:
+      - 'setup/**'
+      - 'run/**'
+      - 'tools/**'
+      - 'dietpi/**'
+      - 'tests/vm/**'
+      - '.github/workflows/lab.yml'
+  schedule:
+    # Nightly, so image or package drift upstream is caught even when nobody
+    # pushes. DietPi and Debian both move under us.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The archive backends teslausb users actually configure. nfs, rclone
+          # and none are not covered here.
+          - name: cifs
+            args: --archive cifs
+          - name: rsync
+            args: --archive rsync
+          # Boots the device with dropbear, as a stock DietPi image does, so
+          # teslausb has to replace it with openssh rather than DietPi installing
+          # openssh from the index up front.
+          - name: cifs-from-dropbear
+            args: --archive cifs --start-dropbear
+
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow access to /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          # DietPi's first run checks connectivity by pinging, and QEMU's user-mode
+          # networking only carries ICMP when unprivileged ping sockets are allowed.
+          # With this the lab's ping assertions are real ICMP rather than a shim.
+          sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+
+      - name: Install what the lab needs
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            qemu-system-x86 qemu-utils xorriso e2fsprogs xz-utils sshpass
+
+      # The runner's root filesystem has little room, while /mnt has tens of
+      # gigabytes. The device disk is a sparse 40G file, because teslausb refuses
+      # to install with less than 32GiB of unpartitioned space, so both the images
+      # and the run directory go there.
+      - name: Put the images and run directory on the big filesystem
+        run: |
+          sudo mkdir -p /mnt/teslausb-cache /mnt/teslausb-tmp
+          sudo chown "$(id -u):$(id -g)" /mnt/teslausb-cache /mnt/teslausb-tmp
+          df -h / /mnt | sed 's/^/    /'
+
+      # The base images are large and change rarely. The key carries the month, so
+      # a stale image cannot be kept indefinitely; the lab verifies the checksums
+      # itself either way, and will refetch when they no longer match.
+      - name: Work out the cache key
+        run: echo "cache_month=$(date +%Y-%m)" >> "$GITHUB_ENV"
+
+      - name: Cache the base images
+        uses: actions/cache@v4
+        with:
+          path: /mnt/teslausb-cache
+          key: lab-images-${{ env.cache_month }}-${{ hashFiles('tests/vm/prepare-nas-image.sh') }}
+          restore-keys: |
+            lab-images-${{ env.cache_month }}-
+            lab-images-
+
+      - name: Run the lab
+        env:
+          DIETPI_CACHE_DIR: /mnt/teslausb-cache
+          TMPDIR: /mnt/teslausb-tmp
+        run: ./tests/vm/lab.sh --timeout 3000 ${{ matrix.args }}
+
+      - name: Collect the logs
+        if: always()
+        run: |
+          mkdir -p lab-logs
+          cp -r /mnt/teslausb-tmp/teslausb-lab/*.log lab-logs/ 2> /dev/null || true
+          df -h / /mnt | sed 's/^/    /'
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-logs-${{ matrix.name }}
+          path: lab-logs/
+          retention-days: 7
+          if-no-files-found: ignore

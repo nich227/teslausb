@@ -266,11 +266,17 @@ qemu-img create -q -f qcow2 -F raw -b "$DEVICE_IMG" "$DEVICE_OVL" > /dev/null
 log "preparing the NAS image (Debian cloud image, configured by cloud-init)"
 readonly NAS_OVL="$RUN_DIR/nas.qcow2"
 readonly NAS_SEED="$RUN_DIR/nas-seed.iso"
-NAS_IP="$NAS_IP" NAS_HOSTNAME="$NAS_HOSTNAME" \
-MAC_NAT="52:54:00:aa:00:20" MAC_PRIVATE="52:54:00:bb:00:20" \
-SHARE_NAME="$SHARE_NAME" SHARE_USER="$SHARE_USER" SHARE_PASS="$SHARE_PASS" \
-ARCHIVE="$ARCHIVE" SSH_PUBKEY="$(cat "$TEST_KEY.pub")" VM_PASSWORD="$VM_PASSWORD" \
-CACHE_DIR="$CACHE_DIR" \
+# env, not a plain assignment prefix: most of these are readonly here, and bash
+# refuses "CACHE_DIR=... cmd" for a readonly CACHE_DIR. It printed a complaint and
+# ran the script anyway with its own defaults, which happened to match, so the NAS
+# was quietly configured from prepare-nas-image.sh's defaults rather than from the
+# lab's settings, and the base image went to that script's default cache instead of
+# the one the lab was told to use.
+env NAS_IP="$NAS_IP" NAS_HOSTNAME="$NAS_HOSTNAME" \
+    MAC_NAT="52:54:00:aa:00:20" MAC_PRIVATE="52:54:00:bb:00:20" \
+    SHARE_NAME="$SHARE_NAME" SHARE_USER="$SHARE_USER" SHARE_PASS="$SHARE_PASS" \
+    ARCHIVE="$ARCHIVE" SSH_PUBKEY="$(cat "$TEST_KEY.pub")" VM_PASSWORD="$VM_PASSWORD" \
+    CACHE_DIR="$CACHE_DIR" \
   bash "$REPO/tests/vm/prepare-nas-image.sh" "$NAS_OVL"
 
 # ---------------------------------------------------------------------------
