@@ -1687,6 +1687,99 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+banner "what the first boot on real hardware turned up"
+# ===========================================================================
+# Every one of these was found by installing on a Pi Zero 2 WH rather than in the
+# lab, because each depends on hardware or on a full unattended boot.
+
+start_case "the gadget is released so the card can be unmounted"
+# The mass storage gadget holds /backingfiles/cam_disk.bin open, so /backingfiles
+# stays busy, systemd cannot unmount it, and the shutdown ends with "failed
+# unmounting backingfiles.mount" and a cam filesystem to repair next boot.
+assert_grep "ExecStop=-/root/bin/disable_gadget.sh" "$REPO/setup/pi/configure.sh" \
+  "teslausb.service releases the gadget when it stops"
+assert_grep "^ExecStart=/bin/bash /root/bin/archiveloop$" "$REPO/setup/pi/configure.sh" \
+  "and still starts archiveloop as before"
+
+start_case "the leftover DietPi RAMlog unit is disabled"
+# It redirects its log into /var/lib/dietpi/logs, which is read-only by then, so dash
+# exits 2 and every boot ends with a failed unit for no reason.
+ramlog_fn=$(sed -n '/^function disable_dietpi_ramlog_units/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh")
+: > /tmp/ramlog.progress
+rm -f /tmp/systemctl.calls
+# the $* and $1 are meant to reach the stub, not expand here
+# shellcheck disable=SC2016
+printf '#!/bin/bash\necho "systemctl $*" >> /tmp/systemctl.calls\n[ "$1" = is-enabled ] && exit 0\nexit 0\n' > "$STUBS/systemctl"
+chmod +x "$STUBS/systemctl"
+( # shellcheck disable=SC2329
+  log_progress () { echo "$*" >> /tmp/ramlog.progress; }
+  eval "$ramlog_fn"
+  disable_dietpi_ramlog_units
+) && rc=0 || rc=1
+rm -f "$STUBS/systemctl"
+assert_eq "$rc" 0 "exits 0"
+assert_grep "disable dietpi-ramlog_disable.service" /tmp/systemctl.calls "disables the failing unit"
+assert_grep "disable dietpi-ramlog.service" /tmp/systemctl.calls "and RAMlog itself"
+assert_grep "nothing left to do" /tmp/ramlog.progress "saying why"
+
+start_case "Bluetooth firmware is installed, which DietPi does not ship"
+# Without bluez-firmware the kernel asks for brcm/BCM43430A1...hcd, does not find it,
+# and the adapter never comes up, so the Tesla BLE feature cannot work. Raspberry Pi
+# OS installs it by default, which is why upstream never had to ask for it.
+assert_grep "bluez-firmware" "$REPO/setup/pi/configure.sh" "bluez-firmware is installed"
+assert_grep "for pkg in bluez bluez-firmware pi-bluetooth" "$REPO/setup/pi/configure.sh" \
+  "along with bluez and pi-bluetooth"
+assert_grep "^install_bluetooth_support$" "$REPO/setup/pi/configure.sh" \
+  "and it runs whether or not the BLE feature is configured"
+assert_grep "apt-cache policy" "$REPO/setup/pi/configure.sh" \
+  "skipping any package this platform does not have"
+
+start_case "the console prompt is redrawn once the boot has gone quiet"
+# The shell is alive the whole time, it just has no prompt on screen: readline draws
+# one when it starts reading, and boot output then covers it. A newline pushed into the
+# terminal is the same as pressing Enter, which a device in a glovebox cannot do.
+assert_grep "TIOCSTI" "$REPO/run/redraw-console-prompt.sh" "a newline is injected into the terminal"
+assert_grep "SIGWINCH does not work" "$REPO/run/redraw-console-prompt.sh" \
+  "and the script records that SIGWINCH was tried and does not work"
+assert_grep "exit 0" "$REPO/run/redraw-console-prompt.sh" "it never fails, being cosmetic"
+assert_grep "OnBootSec=75s" "$REPO/setup/pi/configure.sh" "a timer runs it after boot settles"
+assert_grep "install_console_prompt_redraw" "$REPO/setup/pi/configure.sh" "and setup installs it"
+assert_grep "redraw-console-prompt.sh" "$REPO/setup/pi/configure.sh" "copying the script into place"
+
+start_case "the console logs in after the units that write to it"
+# The shell drew its prompt and DietPi's postboot output then landed on top, leaving a
+# console with a banner and no prompt: alive, but nothing to type at.
+assert_grep "After=dietpi-postboot.service" "$REPO/tools/prepare-boot-partition.sh" \
+  "the autologin drop-in is ordered after DietPi's postboot output"
+
+start_case "an attached display is kept awake"
+# this section runs before the one that builds it, so make a config to work with
+printf 'export SSID=net\nexport WIFIPASS=secret123\n' > /tmp/single.conf
+# DietPi ships hdmi_blanking=1, described in its own config.txt as letting the display
+# go into standby after ten idle minutes. With no keyboard, nothing wakes it again.
+fake_boot_partition
+printf 'hdmi_blanking=1\ndisable_splash=1\n' > /tmp/bootfs/config.txt
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_grep "^hdmi_blanking=0$" /tmp/bootfs/config.txt "an existing 1 is changed to 0"
+assert_grep "^disable_splash=1$" /tmp/bootfs/config.txt "leaving the rest of config.txt alone"
+assert_eq "$(grep -c "^hdmi_blanking" /tmp/bootfs/config.txt)" 1 "without duplicating the line"
+
+fake_boot_partition
+printf 'disable_splash=1\n' > /tmp/bootfs/config.txt
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_grep "^hdmi_blanking=0$" /tmp/bootfs/config.txt "and it is added when absent"
+
+fake_boot_partition
+printf 'hdmi_blanking=0\n' > /tmp/bootfs/config.txt
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_grep "already 0" /tmp/prepare.log "says nothing needed doing when it is already 0"
+
+fake_boot_partition
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_eq "$PREPARE_RC" 0 "and a platform with no config.txt is fine"
+assert_no_file /tmp/bootfs/config.txt "nothing is created there"
+
+# ===========================================================================
 banner "nothing in fstab can strand the device in emergency mode"
 # ===========================================================================
 # A failed mount fails local-fs.target, and a device in a glovebox with no keyboard
