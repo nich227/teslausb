@@ -2,15 +2,27 @@
 
 setup_progress "configuring nginx"
 
-# delete existing nginx fstab entries
+# nginx needs somewhere writable for its logs and its cache, and the root
+# filesystem is read-only in normal operation.
+#
+# /var/lib/nginx gets a tmpfs mount: /var/lib is on the root filesystem, so the
+# mount point itself persists across reboots.
+#
+# /var/log/nginx does not. On DietPi /var/log is already a tmpfs, so anything
+# inside it is gone on the next boot, including a mount point. An fstab entry for
+# it therefore fails at every boot, local-fs.target fails with it, and the device
+# drops into emergency mode: no network, no ssh, and with no keyboard attached, no
+# way in at all. Since /var/log is already a tmpfs, a plain directory in it is
+# just as good as a mount, and systemd-tmpfiles recreates it on every boot.
 sed -i "/.*\/nginx tmpfs.*/d" /etc/fstab
-# and recreate them
-echo "tmpfs /var/log/nginx tmpfs nodev,nosuid 0 0" >> /etc/fstab
 echo "tmpfs /var/lib/nginx tmpfs nodev,nosuid 0 0" >> /etc/fstab
-# only needed for initial setup, since systemd will create these automatically after that
+cat > /etc/tmpfiles.d/teslausb-nginx.conf <<'EOF'
+# Written by teslausb setup. /var/log is a tmpfs, so this has to be recreated on
+# every boot rather than mounted from fstab.
+d /var/log/nginx 0755 root adm -
+EOF
 mkdir -p /var/log/nginx
 mkdir -p /var/lib/nginx
-mount /var/log/nginx
 mount /var/lib/nginx
 
 apt-get -y install nginx fcgiwrap libnginx-mod-http-fancyindex fuse libfuse-dev g++ net-tools wireless-tools ethtool
