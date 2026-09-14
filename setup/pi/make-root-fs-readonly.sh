@@ -130,6 +130,19 @@ tune2fs -c 1 "$ROOT_PARTITION_DEVICE" || log_progress "tune2fs failed for rootfs
 tune2fs -c 1 /dev/disk/by-label/mutable || log_progress "tune2fs failed for mutable"
 
 # we're not using swap, so delete the swap file for some extra space
+# The swap file has to go, but so does the fstab entry that activates it. DietPi
+# keeps swap as /var/swap with an fstab line, unlike Raspberry Pi OS where removing
+# dphys-swapfile was enough. Deleting only the file leaves systemd trying to swapon
+# a file that is not there, which fails local-fs.target and drops the device into
+# emergency mode on the next boot.
+if [ -x /boot/dietpi/func/dietpi-set_swapfile ]
+then
+  # DietPi's own way, which also keeps its records straight
+  /boot/dietpi/func/dietpi-set_swapfile 0 < /dev/null &> /dev/null || \
+    log_progress "WARNING: dietpi-set_swapfile could not disable swap"
+fi
+swapoff /var/swap &> /dev/null || true
+sed -i '\|^/var/swap[[:blank:]]|d' /etc/fstab
 rm -f /var/swap
 
 # Move fake-hwclock.data to /mutable directory so it can be updated
