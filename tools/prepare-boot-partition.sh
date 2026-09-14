@@ -295,6 +295,38 @@ echo "  - eject the card and boot the device"
 echo "  - DietPi does its own first-boot setup unattended, then starts teslausb setup"
 echo "  - progress is logged to teslausb-headless-setup.log on this partition"
 # ---------------------------------------------------------------------------
+# Keep an attached display awake.
+#
+# A monitor is plugged into one of these almost only when something has gone wrong,
+# and with no keyboard attached nothing can wake a display that has gone to sleep:
+# the screen looks dead and tells you nothing, which is exactly how a working device
+# was mistaken for a hung one.
+#
+# DietPi already keeps the console itself from blanking: dietpi-login runs
+# "setterm --blank 0 --powersave off" and the images boot with consoleblank=0. What
+# it leaves alone is the Raspberry Pi firmware setting hdmi_blanking, which DietPi
+# ships as 1, described in its own config.txt as letting "the display going into
+# standby after 10 minutes without input". 0 blanks the output without switching it
+# off, so the display stays awake, and it is the firmware's own default.
+# ---------------------------------------------------------------------------
+for config_txt in "$TESLAUSB_TARGET/config.txt" "$TARGET/config.txt"
+do
+  [ -f "$config_txt" ] || continue
+  if grep -qE '^[[:blank:]]*hdmi_blanking=0' "$config_txt"
+  then
+    log "config.txt: hdmi_blanking is already 0"
+  elif grep -qE '^[[:blank:]]*hdmi_blanking=' "$config_txt"
+  then
+    sed -i -E 's|^[[:blank:]]*hdmi_blanking=.*|hdmi_blanking=0|' "$config_txt"
+    log "config.txt: hdmi_blanking=0, so an attached display does not go to sleep"
+  else
+    echo 'hdmi_blanking=0' >> "$config_txt"
+    log "config.txt: added hdmi_blanking=0, so an attached display does not go to sleep"
+  fi
+  break
+done
+
+# ---------------------------------------------------------------------------
 # Start the first run without a keyboard.
 #
 # DietPi's first run is triggered by a login shell: /etc/bashrc.d/dietpi.bash hands
@@ -320,6 +352,13 @@ then
 # DietPi's first run only starts once something logs in, and a device in a car has
 # no keyboard. Without this it waits at the login prompt forever, never brings up
 # wifi, and can never be reached.
+[Unit]
+# Ordered after DietPi's own postboot output, which is tidier but not sufficient on its
+# own: boot messages keep arriving afterwards and paint over the prompt regardless.
+# teslausb installs a timer that asks the shell to redraw once that has finished, see
+# run/redraw-console-prompt.sh.
+After=dietpi-postboot.service
+
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
