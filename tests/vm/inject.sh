@@ -75,6 +75,12 @@ mkdir -p "$STAGING"
 debugfs -R "dump /boot/dietpi.txt $STAGING/dietpi.txt" "$PART" 2> /dev/null
 [ -s "$STAGING/dietpi.txt" ] || { echo "no /boot/dietpi.txt in the image" >&2; exit 1; }
 
+# prepare-boot-partition.sh tells DietPi's own /boot from a firmware partition by looking
+# for a dietpi directory beside dietpi.txt, and goes hunting for a root filesystem on a
+# block device when it does not find one, which there is nothing to find here. The
+# staging directory therefore has to look like the /boot it stands in for.
+mkdir -p "$STAGING/dietpi"
+
 # --- run the real thing ---------------------------------------------------
 # This is the same script a user runs against a freshly flashed card, which is
 # the point: the VM tests that script's output rather than a copy of it.
