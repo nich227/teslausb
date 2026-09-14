@@ -4,6 +4,12 @@ This is a streamlined process for setting up the device. You'll flash an officia
 
 teslausb runs on [DietPi](https://dietpi.com/). Raspberry Pi OS is not supported.
 
+Two things worth knowing before you start: there is no `pi` user on DietPi, so you
+log in as `root` or `dietpi`, and teslausb replaces DietPi's dropbear with OpenSSH
+during setup, because its rsync archive backend needs an ssh client. If you want the
+device to serve its own wifi network as well, see
+[access point setup](./SetupAccessPoint.md).
+
 ## Notes
 
 - Assumes your Pi has access to Wifi, with internet access (during setup). (But all setup methods do currently.) USB networking is still enabled for troubleshooting or manual setup

@@ -39,7 +39,20 @@ Optional:
 
 ## Installing
 
-To install teslausb on a Raspberry Pi, it is recommended to use the [prebuilt image](https://github.com/marcone/teslausb/releases) and [one step setup instructions](doc/OneStepSetup.md). For other SBCs, start [here](https://github.com/marcone/teslausb/wiki/Installation)
+Flash an official [DietPi image](https://dietpi.com/#download) for your board, then follow the [one step setup instructions](doc/OneStepSetup.md). There is no teslausb image to download: everything is configured from a single file on the boot partition before the first boot, and the device installs itself. For SBC-specific hardware notes, the [upstream wiki](https://github.com/marcone/teslausb/wiki/Installation) still applies.
+
+### What differs from the Raspberry Pi OS builds
+
+- **There is no `pi` user.** Log in as `root` or `dietpi`, with the password you set as `OS_PASSWORD`.
+- **SSH is OpenSSH.** DietPi ships dropbear, which teslausb replaces: the rsync archive backend runs rsync over ssh, and dropbear provides no `ssh` client at all.
+- **The access point runs on hostapd**, alongside the normal wifi connection rather than instead of it. See [access point setup](doc/SetupAccessPoint.md).
+- **Wifi is required, not optional.** The device lives in a car with no ethernet, so DietPi cannot finish its own first boot without working credentials.
+
+## Testing
+
+teslausb has unit tests, an integration suite that runs against a real DietPi
+container, and a two-VM lab that installs a device from scratch and archives a clip
+to a NAS. See [doc/Testing.md](doc/Testing.md).
 
 ## Contributing
 
