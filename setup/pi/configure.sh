@@ -253,6 +253,34 @@ function check_tessie_api () {
   fi
 }
 
+# DietPi ships no Bluetooth firmware, and the kernel then asks for a file that is
+# not there: on a Pi Zero 2 W the log fills with
+# "Bluetooth: hci0: BCM: 'brcm/BCM43430A1.raspberrypi,model-zero-2-w.hcd'" and the
+# adapter never comes up. bluez-firmware is what provides those .hcd files, which is
+# easy to miss because Raspberry Pi OS installs it by default and so upstream never
+# had to ask for it. Without it the Tesla BLE feature cannot work at all.
+#
+# Each package is only installed if this platform has it: pi-bluetooth exists only in
+# the Raspberry Pi repositories, and bluez-firmware is not everywhere either.
+function install_bluetooth_support () {
+  local pkg
+  for pkg in bluez bluez-firmware pi-bluetooth
+  do
+    if dpkg-query -W --showformat='${db:Status-Status}\n' "$pkg" 2> /dev/null | grep -q '^installed$'
+    then
+      continue
+    fi
+    if ! apt-cache policy "$pkg" 2> /dev/null | sed -n 's/^  Candidate: //p' | grep -qv '(none)'
+    then
+      log_progress "no $pkg for this platform, skipping it"
+      continue
+    fi
+    log_progress "installing $pkg, which DietPi does not ship"
+    DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" || \
+      log_progress "WARNING: could not install $pkg"
+  done
+}
+
 function check_and_configure_tesla_ble () {
   local install_path="$1"
   if [[ ( -n "${TESLA_BLE_VIN:+x}" ) ]]
@@ -869,6 +897,44 @@ log_progress "Using archive module: $archive_module"
 install_archive_scripts /root/bin "$archive_module"
 /tmp/verify-and-configure-archive.sh
 
+# The console is the only way in when a device will not come up on the network, so it
+# is worth it actually showing a prompt. See run/redraw-console-prompt.sh for why a
+# timer is needed rather than doing this at boot: the output that paints over the
+# prompt keeps arriving for the best part of a minute, and the getty starts as part of
+# multi-user.target, so anything ordered there runs too early.
+function install_console_prompt_redraw () {
+  log_progress "Installing the console prompt redraw"
+  copy_script run/redraw-console-prompt.sh "$install_path"
+
+  cat << EOF > /etc/systemd/system/teslausb-console-prompt.service
+[Unit]
+Description=Redraw the console prompt once boot output has finished
+
+[Service]
+Type=oneshot
+ExecStart=$install_path/redraw-console-prompt.sh
+EOF
+
+  cat << EOF > /etc/systemd/system/teslausb-console-prompt.timer
+[Unit]
+Description=Redraw the console prompt once the boot has gone quiet
+
+[Timer]
+OnBootSec=75s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable teslausb-console-prompt.timer &> /dev/null || \
+    log_progress "WARNING: could not enable the console prompt timer"
+}
+
+install_console_prompt_redraw
+install_bluetooth_support
+
 systemctl disable teslausb.service || true
 
 cat << EOF > /lib/systemd/system/teslausb.service
@@ -880,6 +946,12 @@ After=mutable.mount backingfiles.mount
 [Service]
 Type=simple
 ExecStart=/bin/bash /root/bin/archiveloop
+# The mass storage gadget holds /backingfiles/cam_disk.bin open, which keeps
+# /backingfiles busy: systemd cannot unmount it on the way down, waits for its
+# timeout and gives up with "failed unmounting backingfiles.mount", leaving the cam
+# filesystem to be repaired on the next boot. Releasing the gadget first lets the
+# unmount succeed. It is allowed to fail, since a stop must never be blocked by it.
+ExecStop=-/root/bin/disable_gadget.sh
 Restart=always
 
 [Install]
