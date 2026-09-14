@@ -127,6 +127,7 @@ SSID=$(conf_value SSID "")
 WIFIPASS=$(conf_value WIFIPASS "")
 WIFI_COUNTRY=$(conf_value WIFI_COUNTRY US)
 HOSTNAME_WANTED=$(conf_value TESLAUSB_HOSTNAME teslausb)
+TIMEZONE_WANTED=$(conf_value TESLAUSB_TIMEZONE "")
 MDNS_WANTED=$(conf_value TESLAUSB_MDNS_NAME "")
 
 # Both are DNS labels: letters, digits and hyphens, not starting or ending with a
@@ -173,6 +174,14 @@ set_dietpi_key () {
 set_dietpi_key AUTO_SETUP_AUTOMATED 1
 set_dietpi_key AUTO_SETUP_CUSTOM_SCRIPT_EXEC 1
 set_dietpi_key AUTO_SETUP_NET_HOSTNAME "$HOSTNAME_WANTED"
+
+# The images are set to UTC, which makes every timestamp in the setup log, the
+# archive log and the watchdog log hours away from the clock of whoever is reading
+# them.
+if [ -n "$TIMEZONE_WANTED" ]
+then
+  set_dietpi_key AUTO_SETUP_TIMEZONE "$TIMEZONE_WANTED"
+fi
 
 # The login password for root and the dietpi user. The prebuilt Raspberry Pi OS
 # image shipped with a known default (user pi, password raspberry); DietPi's
@@ -302,6 +311,23 @@ then
     log "WARNING:   printf '%s,%s\\n' START \$(( 8 * 1024 * 1024 * 2 )) | sfdisk --force -N2 /dev/DEVICE"
     log "WARNING:   e2fsck -fp /dev/DEVICEp2 && resize2fs /dev/DEVICEp2"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Anything to seed into the cam drive's root.
+#
+# Tesla reads LockChime.wav from the root of the drive for its custom lock sound,
+# and a Boombox folder from the same place. Those are just files on the drive, so a
+# rebuilt card loses them unless they are carried across. Put them in a
+# teslausb-cam-root directory next to your config and setup copies them onto the cam
+# drive when it creates it.
+# ---------------------------------------------------------------------------
+conf_dir="$(cd "$(dirname "$CONF")" && pwd)"
+if [ -d "$conf_dir/teslausb-cam-root" ]
+then
+  log "staging $(find "$conf_dir/teslausb-cam-root" -type f | wc -l) file(s) for the cam drive root"
+  rm -rf "$TARGET/teslausb-cam-root"
+  cp -r "$conf_dir/teslausb-cam-root" "$TARGET/teslausb-cam-root"
 fi
 
 echo

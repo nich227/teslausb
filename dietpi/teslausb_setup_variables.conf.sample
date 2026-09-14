@@ -191,6 +191,11 @@ export CAM_SIZE=40G
 # default gives you teslausb.local.
 # export TESLAUSB_HOSTNAME=teslausb-Model3
 
+# Uncomment to set the timezone. The DietPi images are UTC, which puts every
+# timestamp in the setup log, the archive log and the watchdog log hours away from
+# your own clock.
+# export TESLAUSB_TIMEZONE=America/Los_Angeles
+
 # Uncomment to advertise a different .local name from the hostname above, for
 # something shorter to type in the car. Left unset, the .local name follows the
 # hostname. Both accept letters, digits and hyphens, not starting or ending with a

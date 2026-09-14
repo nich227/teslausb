@@ -38,6 +38,13 @@ your normal wifi connection rather than replacing it. The [wiki](https://github.
 
     > **Note** DietPi brings up the network and updates itself before any teslausb code runs, which is why the wifi credentials have to be in DietPi's files as well as yours. The helper does that for you. Wifi is not optional: the device lives in your car with no ethernet, so without working credentials it will never get online and DietPi cannot finish its own first boot.
 
+1.  Optionally, put anything the car should find in the root of the dashcam drive
+    into a `teslausb-cam-root` directory next to your config file, and the helper
+    stages it for you. `LockChime.wav` is the usual one: Tesla plays it as the lock
+    sound, and because it is simply a file on the drive rather than anything teslausb
+    manages, rebuilding a card loses it otherwise. A `Boombox` folder works the same
+    way.
+
 1.  Eject the card and boot the device. DietPi runs its own setup unattended (no prompts, because the helper sets `AUTO_SETUP_AUTOMATED=1`), then runs the teslausb bootstrap, which takes over and reboots as needed.
 
     Log in as `root` or `dietpi`. **DietPi has no `pi` user**, so this differs from the Raspberry Pi OS builds where you logged in as `pi` with the password `raspberry`. The password is whatever you set as `OS_PASSWORD` in your config, or DietPi's default of `dietpi` if you left it unset.
