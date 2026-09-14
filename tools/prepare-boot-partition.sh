@@ -72,6 +72,23 @@ SSID=$(conf_value SSID "")
 WIFIPASS=$(conf_value WIFIPASS "")
 WIFI_COUNTRY=$(conf_value WIFI_COUNTRY US)
 HOSTNAME_WANTED=$(conf_value TESLAUSB_HOSTNAME teslausb)
+MDNS_WANTED=$(conf_value TESLAUSB_MDNS_NAME "")
+
+# Both are DNS labels: letters, digits and hyphens, not starting or ending with a
+# hyphen, at most 63 characters. Catching this here means being told now, rather
+# than finding out that a device in a car never appeared on the network.
+for pair in "TESLAUSB_HOSTNAME:$HOSTNAME_WANTED" "TESLAUSB_MDNS_NAME:$MDNS_WANTED"
+do
+  name=${pair#*:}
+  [ -n "$name" ] || continue
+  if ! [[ "$name" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
+  then
+    echo "FATAL: ${pair%%:*} '$name' is not a usable name." >&2
+    echo "       Use letters, digits and hyphens only, not starting or ending with a" >&2
+    echo "       hyphen, at most 63 characters." >&2
+    exit 1
+  fi
+done
 OS_PASSWORD=$(conf_value OS_PASSWORD "")
 
 # ---------------------------------------------------------------------------

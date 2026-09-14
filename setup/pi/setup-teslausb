@@ -384,10 +384,24 @@ function create_usb_drive_backing_files () {
   fi
 }
 
+# Host names and mDNS names are DNS labels: letters, digits and hyphens, not
+# starting or ending with a hyphen, at most 63 characters. Anything else and avahi
+# or hostnamectl will reject it, or worse, take it and behave oddly.
+function valid_host_label () {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
+}
+
 function configure_hostname () {
   local new_host_name="$TESLAUSB_HOSTNAME"
   local old_host_name
   old_host_name=$(hostname)
+
+  if ! valid_host_label "$new_host_name"
+  then
+    setup_progress "WARNING: TESLAUSB_HOSTNAME '$new_host_name' is not a usable name, keeping '$old_host_name'."
+    setup_progress "WARNING: use letters, digits and hyphens only, not starting or ending with one."
+    return 0
+  fi
 
   # Set the specified hostname if it differs from the current name
   if [ "$new_host_name" != "$old_host_name" ]
@@ -407,6 +421,51 @@ function configure_hostname () {
     systemctl restart avahi-daemon || true
     setup_progress "Configured hostname: $(hostname)"
   fi
+}
+
+# The name the device answers to on the network is normally its hostname: avahi
+# publishes <hostname>.local, which is why teslausb.local works out of the box.
+# TESLAUSB_MDNS_NAME lets that advertised name differ from the machine's own name,
+# for anyone who wants something short in the car without renaming the system.
+function configure_mdns_name () {
+  local wanted="${TESLAUSB_MDNS_NAME:-}"
+  local conf=/etc/avahi/avahi-daemon.conf
+
+  if [ -z "$wanted" ]
+  then
+    # Nothing to do: avahi publishes the hostname, so the .local name follows it.
+    return 0
+  fi
+
+  if ! valid_host_label "$wanted"
+  then
+    setup_progress "WARNING: TESLAUSB_MDNS_NAME '$wanted' is not a usable name, ignoring it."
+    setup_progress "WARNING: use letters, digits and hyphens only, not starting or ending with one."
+    return 0
+  fi
+
+  if [ ! -f "$conf" ]
+  then
+    setup_progress "WARNING: avahi is not installed, cannot set the .local name"
+    return 0
+  fi
+
+  if grep -qE "^host-name=${wanted}\$" "$conf"
+  then
+    setup_progress "the .local name is already ${wanted}.local"
+    return 0
+  fi
+
+  if grep -qE '^[#[:blank:]]*host-name=' "$conf"
+  then
+    sed -i -E "s|^[#[:blank:]]*host-name=.*|host-name=${wanted}|" "$conf"
+  else
+    # No host-name line at all, so add one to the [server] section.
+    sed -i "0,/^\[server\]/s|^\[server\]|[server]\nhost-name=${wanted}|" "$conf"
+  fi
+
+  systemctl restart avahi-daemon || true
+  setup_progress "the device answers to ${wanted}.local as well as its hostname"
 }
 
 function make_root_fs_readonly () {
@@ -1062,6 +1121,9 @@ update_package_index
 
 install_base_packages
 ensure_openssh
+# After the packages, because this edits avahi's configuration and avahi is one of
+# the packages. The hostname is set earlier, since other things read it.
+configure_mdns_name
 
 # set time zone so we get decent timestamps in the rest of the setup log
 set_timezone

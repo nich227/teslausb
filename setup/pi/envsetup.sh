@@ -122,6 +122,10 @@ function read_setup_variables {
   CONFIGURE_ARCHIVING=${CONFIGURE_ARCHIVING:-true}
   UPGRADE_PACKAGES=${UPGRADE_PACKAGES:-false}
   export TESLAUSB_HOSTNAME=${TESLAUSB_HOSTNAME:-teslausb}
+  # Left empty, avahi publishes the system hostname, so the device answers to
+  # <hostname>.local and by default that is teslausb.local. Setting this makes the
+  # advertised name differ from the machine's own name.
+  export TESLAUSB_MDNS_NAME=${TESLAUSB_MDNS_NAME:-}
   export NOTIFICATION_TITLE=${NOTIFICATION_TITLE:-${TESLAUSB_HOSTNAME}}
   SAMBA_ENABLED=${SAMBA_ENABLED:-false}
   SAMBA_GUEST=${SAMBA_GUEST:-false}

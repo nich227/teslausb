@@ -186,8 +186,16 @@ export CAM_SIZE=40G
 # the duration of that delay
 # export ARCHIVE_DELAY=20
 
-# Uncomment if you want to override the default hostname of "teslausb"
+# Uncomment if you want to override the default hostname of "teslausb". The device
+# also answers to <hostname>.local on the local network, so this changes both: the
+# default gives you teslausb.local.
 # export TESLAUSB_HOSTNAME=teslausb-Model3
+
+# Uncomment to advertise a different .local name from the hostname above, for
+# something shorter to type in the car. Left unset, the .local name follows the
+# hostname. Both accept letters, digits and hyphens, not starting or ending with a
+# hyphen.
+# export TESLAUSB_MDNS_NAME=dashcam
 
 # uncomment to define an SSH public key that can be utilized to SSH into
 # teslausb as root

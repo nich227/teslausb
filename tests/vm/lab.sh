@@ -26,6 +26,7 @@
 # Usage:
 #   tests/vm/lab.sh [--keep] [--archive cifs|rsync] [--timeout SECONDS]
 #                   [--fast] [--start-dropbear] [--ap]
+#                   [--hostname NAME] [--mdns-name NAME]
 #
 # Nothing here needs root on the host.
 
@@ -63,6 +64,9 @@ do
     # Configure and then actually exercise the access point, using simulated wifi
     # radios so a VM with no wireless hardware can still associate to it.
     --ap)            AP=1; shift ;;
+    # Prove the names are configurable rather than only testing the defaults.
+    --hostname)      DEVICE_HOSTNAME="$2"; shift 2 ;;
+    --mdns-name)     DEVICE_MDNS="$2"; shift 2 ;;
     -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
     *)          echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -83,6 +87,13 @@ readonly NAS_SSH_PORT=2231
 readonly VM_PASSWORD=teslausb-lab
 
 readonly NAS_HOSTNAME=teslanas
+# The defaults teslausb ships with, so an ordinary run tests teslausb.local.
+: "${DEVICE_HOSTNAME:=teslausb}"
+: "${DEVICE_MDNS:=}"
+# What the device should answer to: the mDNS name when set, otherwise the hostname.
+LOCAL_NAME="${DEVICE_MDNS:-$DEVICE_HOSTNAME}"
+readonly DEVICE_HOSTNAME DEVICE_MDNS LOCAL_NAME
+
 readonly AP_SSID="TESLAUSB LAB AP"
 readonly AP_PASS=labdrivefast
 readonly AP_ADDRESS=192.168.66.1
@@ -153,7 +164,8 @@ export SHARE_NAME='${SHARE_NAME}'
 export SHARE_USER=${SHARE_USER}
 export SHARE_PASSWORD='${SHARE_PASS}'
 export OS_PASSWORD='${VM_PASSWORD}'
-export TESLAUSB_HOSTNAME=teslausb
+export TESLAUSB_HOSTNAME=${DEVICE_HOSTNAME}
+$( [ -n "$DEVICE_MDNS" ] && printf "export TESLAUSB_MDNS_NAME='%s'\n" "$DEVICE_MDNS" )
 $( [ "${AP:-0}" = 1 ] && printf "export AP_SSID='%s'\nexport AP_PASS='%s'\nexport AP_IP='%s'\n" \
      "$AP_SSID" "$AP_PASS" "$AP_ADDRESS" )
 export UPGRADE_PACKAGES=false
@@ -171,7 +183,8 @@ export RSYNC_USER=${SHARE_USER}
 export RSYNC_SERVER=${NAS_IP}
 export RSYNC_PATH=/srv/${SHARE_NAME}
 export OS_PASSWORD='${VM_PASSWORD}'
-export TESLAUSB_HOSTNAME=teslausb
+export TESLAUSB_HOSTNAME=${DEVICE_HOSTNAME}
+$( [ -n "$DEVICE_MDNS" ] && printf "export TESLAUSB_MDNS_NAME='%s'\n" "$DEVICE_MDNS" )
 $( [ "${AP:-0}" = 1 ] && printf "export AP_SSID='%s'\nexport AP_PASS='%s'\nexport AP_IP='%s'\n" \
      "$AP_SSID" "$AP_PASS" "$AP_ADDRESS" )
 export UPGRADE_PACKAGES=false
@@ -205,7 +218,7 @@ readonly TEST_KEY="$CACHE_DIR/teslausb-vm-key"
 prepare_vm () {
   local role="$1" ip="$2" conf="$3" out="$4"
   # the NAS is a plain DietPi with a share on it, not a second teslausb
-  local bootstrap=1 hostname_key="AUTO_SETUP_NET_HOSTNAME=teslausb"
+  local bootstrap=1 hostname_key="AUTO_SETUP_NET_HOSTNAME=$DEVICE_HOSTNAME"
   if [ "${START_DROPBEAR:-0}" = 1 ]
   then
     # -1 is Dropbear. teslausb's ensure_openssh is then the thing that has to
@@ -517,25 +530,25 @@ log "what the NAS can see of the device"
 mdns=""
 for (( i = 0; i < 30; i++ ))
 do
-  mdns=$(on_nas "getent hosts teslausb.local | awk '{print \$1}'")
+  mdns=$(on_nas "getent hosts ${LOCAL_NAME}.local | awk '{print \$1}'")
   [ -n "$mdns" ] && break
   sleep 10
 done
 if [ -n "$mdns" ]
 then
-  ok "teslausb.local resolves from the NAS (to $mdns)"
+  ok "${LOCAL_NAME}.local resolves from the NAS (to $mdns)"
   if [ "$mdns" = "$DEVICE_IP" ]
   then ok "and it resolves to the device's private address"
   else not_ok "it resolves to $mdns, not $DEVICE_IP"
   fi
 else
-  not_ok "teslausb.local does not resolve from the NAS"
+  not_ok "${LOCAL_NAME}.local does not resolve from the NAS"
 fi
 
 pinged=no
 for (( i = 0; i < 12; i++ ))
 do
-  if [ "$(on_nas "ping -c1 -W3 teslausb.local > /dev/null 2>&1 && echo yes")" = yes ]
+  if [ "$(on_nas "ping -c1 -W3 ${LOCAL_NAME}.local > /dev/null 2>&1 && echo yes")" = yes ]
   then
     pinged=yes
     break
@@ -543,8 +556,8 @@ do
   sleep 10
 done
 if [ "$pinged" = yes ]
-then ok "teslausb.local answers a ping from the NAS"
-else not_ok "teslausb.local does not answer from the NAS"
+then ok "${LOCAL_NAME}.local answers a ping from the NAS"
+else not_ok "${LOCAL_NAME}.local does not answer from the NAS"
 fi
 
 # The web interface is put in place by setup, which is still running at this
@@ -553,7 +566,7 @@ fi
 http_code=000
 for (( i = 0; i < 60; i++ ))
 do
-  http_code=$(on_nas "curl -s -o /dev/null -m 10 -w '%{http_code}' http://teslausb.local/ 2>/dev/null")
+  http_code=$(on_nas "curl -s -o /dev/null -m 10 -w '%{http_code}' http://${LOCAL_NAME}.local/ 2>/dev/null")
   case "$http_code" in
     200|401) break ;;
   esac
@@ -561,13 +574,13 @@ do
 done
 case "$http_code" in
   200|401)
-    ok "the web interface answers on http://teslausb.local/ ($http_code)"
+    ok "the web interface answers on http://${LOCAL_NAME}.local/ ($http_code)"
     ;;
   *)
     # fall back to the address, to tell a web server problem from a name problem
     http_ip=$(on_nas "curl -s -o /dev/null -m 10 -w '%{http_code}' http://$DEVICE_IP/ 2>/dev/null")
     if [ "$http_ip" = 200 ] || [ "$http_ip" = 401 ]
-    then not_ok "the web interface answers on $DEVICE_IP ($http_ip) but not via teslausb.local"
+    then not_ok "the web interface answers on $DEVICE_IP ($http_ip) but not via ${LOCAL_NAME}.local"
     else not_ok "the web interface did not answer (by name: '$http_code', by address: '$http_ip')"
     fi
     ;;
@@ -621,6 +634,21 @@ fi
 
 if [ "$setup_done" = 1 ]
 then
+  # ---------------------------------------------------------------------------
+  log "the configured names"
+  # ---------------------------------------------------------------------------
+  if [ "$(on_device hostname)" = "$DEVICE_HOSTNAME" ]
+  then ok "the device's hostname is $DEVICE_HOSTNAME"
+  else not_ok "the hostname is '$(on_device hostname)', expected $DEVICE_HOSTNAME"
+  fi
+  if [ -n "$DEVICE_MDNS" ]
+  then
+    if [ "$(on_device "grep -c '^host-name=$DEVICE_MDNS\$' /etc/avahi/avahi-daemon.conf")" = 1 ]
+    then ok "avahi advertises the separate name $DEVICE_MDNS"
+    else not_ok "avahi was not told to advertise $DEVICE_MDNS"
+    fi
+  fi
+
   # ---------------------------------------------------------------------------
   log "openssh is the only ssh server"
   # ---------------------------------------------------------------------------

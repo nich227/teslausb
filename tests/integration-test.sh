@@ -1684,6 +1684,96 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+banner "the name the device answers to"
+# ===========================================================================
+# The hostname doubles as the mDNS name, because avahi publishes <hostname>.local,
+# which is what makes teslausb.local work out of the box. TESLAUSB_MDNS_NAME lets
+# the advertised name differ from the machine's own name.
+name_fns=$(sed -n '/^function valid_host_label/,/^}/p;/^function configure_mdns_name/,/^}/p' \
+  "$REPO/setup/pi/setup-teslausb")
+
+start_case "what counts as a usable name"
+( eval "$name_fns"
+  for good in teslausb teslausb-Model3 dashcam a a1 "$(printf 'a%.0s' {1..63})"
+  do valid_host_label "$good" || { echo "rejected '$good'" > /tmp/label.bad; exit 1; }
+  done
+  for bad in "" "-teslausb" "teslausb-" "tesla usb" "tesla_usb" "tesla.usb" "$(printf 'a%.0s' {1..64})"
+  do valid_host_label "$bad" && { echo "accepted '$bad'" > /tmp/label.bad; exit 1; }
+  done
+  exit 0 ) && rc=0 || rc=1
+assert_eq "$rc" 0 "accepts DNS labels and refuses the rest${rc:+ ($(cat /tmp/label.bad 2>/dev/null))}"
+rm -f /tmp/label.bad
+
+run_mdns () {
+  # $1: TESLAUSB_MDNS_NAME, $2: starting avahi-daemon.conf content
+  : > /tmp/mdns.progress
+  rm -f /tmp/systemctl.calls
+  mkdir -p /etc/avahi
+  printf '%s\n' "$2" > /etc/avahi/avahi-daemon.conf
+  printf '#!/bin/bash\necho "systemctl $*" >> /tmp/systemctl.calls\nexit 0\n' > "$STUBS/systemctl"
+  chmod +x "$STUBS/systemctl"
+  (
+    # shellcheck disable=SC2329
+    setup_progress () { echo "$*" >> /tmp/mdns.progress; }
+    export TESLAUSB_MDNS_NAME="$1"
+    eval "$name_fns"
+    configure_mdns_name
+  ) && MDNS_RC=0 || MDNS_RC=$?
+}
+
+start_case "an unset name leaves avahi alone, so .local follows the hostname"
+run_mdns "" "[server]"
+assert_eq "$MDNS_RC" 0 "exits 0"
+assert_eq "$(grep -c "host-name" /etc/avahi/avahi-daemon.conf || true)" 0 "writes no host-name"
+assert_no_file /tmp/systemctl.calls "does not restart avahi"
+
+start_case "a name is added to a config that has none"
+run_mdns dashcam "[server]
+use-ipv6=no"
+assert_eq "$MDNS_RC" 0 "exits 0"
+assert_grep "^host-name=dashcam$" /etc/avahi/avahi-daemon.conf "sets the advertised name"
+assert_grep "^use-ipv6=no$" /etc/avahi/avahi-daemon.conf "leaves the rest of the section alone"
+assert_grep "restart avahi-daemon" /tmp/systemctl.calls "restarts avahi so it takes effect"
+assert_grep "dashcam.local" /tmp/mdns.progress "says what the device now answers to"
+
+start_case "and replaces one that is already there, commented or not"
+run_mdns dashcam "[server]
+#host-name=foo"
+assert_grep "^host-name=dashcam$" /etc/avahi/avahi-daemon.conf "replaces a commented example"
+assert_eq "$(grep -c "host-name" /etc/avahi/avahi-daemon.conf)" 1 "without leaving a duplicate"
+run_mdns newname "[server]
+host-name=oldname"
+assert_grep "^host-name=newname$" /etc/avahi/avahi-daemon.conf "replaces a previous name"
+assert_eq "$(grep -c "host-name" /etc/avahi/avahi-daemon.conf)" 1 "without leaving a duplicate"
+
+start_case "setting the same name again changes nothing"
+run_mdns dashcam "[server]
+host-name=dashcam"
+assert_grep "already the .local name\|already " /tmp/mdns.progress "notices it is already set"
+assert_no_file /tmp/systemctl.calls "so avahi is not restarted"
+
+start_case "an unusable name is refused rather than written"
+run_mdns "not a name" "[server]"
+assert_eq "$MDNS_RC" 0 "carries on rather than failing setup"
+assert_eq "$(grep -c "host-name" /etc/avahi/avahi-daemon.conf || true)" 0 "writes nothing"
+assert_grep "not a usable name" /tmp/mdns.progress "says why"
+
+start_case "the boot partition refuses bad names before first boot"
+for bad in "tesla usb" "-nope" "under_score"; do
+  fake_boot_partition
+  printf 'export TESLAUSB_HOSTNAME=%s\n' "'$bad'" > /tmp/badname.conf
+  run_prepare /tmp/bootfs /tmp/badname.conf
+  assert_eq "$PREPARE_RC" 1 "refuses hostname '$bad'"
+  # run_prepare puts the script's output here
+  assert_grep "not a usable name" /tmp/prepare.log "and says why for '$bad'"
+done
+fake_boot_partition
+printf 'export TESLAUSB_HOSTNAME=teslausb-Model3\nexport TESLAUSB_MDNS_NAME=dashcam\n' > /tmp/goodname.conf
+run_prepare /tmp/bootfs /tmp/goodname.conf
+assert_eq "$PREPARE_RC" 0 "accepts a valid pair"
+assert_grep "AUTO_SETUP_NET_HOSTNAME=teslausb-Model3" /tmp/bootfs/dietpi.txt "and passes the hostname to DietPi"
+
+# ===========================================================================
 banner "the image architecture advisory"
 # ===========================================================================
 # DietPi ships one image per instruction set and which one suits a board is not

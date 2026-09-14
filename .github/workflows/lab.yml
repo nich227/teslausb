@@ -53,8 +53,10 @@ jobs:
           # and none are not covered here.
           - name: cifs
             args: --archive cifs
+          # Also carries the custom names, so both the defaults and a configured
+          # hostname and .local name are covered without a fourth VM run.
           - name: rsync
-            args: --archive rsync
+            args: --archive rsync --hostname teslausb-Model3 --mdns-name dashcam
           # Boots the device with dropbear, as a stock DietPi image does, so
           # teslausb has to replace it with openssh rather than DietPi installing
           # openssh from the index up front.
