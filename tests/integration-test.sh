@@ -316,16 +316,11 @@ then not_ok "the setup driver still drives the wifi adapter"
 else ok "the setup driver does not touch the wifi adapter"
 fi
 
-start_case "the access point path stops instead of fighting DietPi's network stack"
-out=$(
-  cd "$REPO/setup/pi" &&
-  AP_SSID=test AP_PASS=supersecret bash ./configure-ap.sh 2>&1
-)
-rc=$?
-if [ "$rc" -ne 0 ] && grep -q "NetworkManager" <<< "$out"
-then ok "refuses to configure an AP without NetworkManager"
-else not_ok "expected a NetworkManager complaint, got rc=$rc: $out"
-fi
+start_case "the access point does not need DietPi's network stack replaced"
+# It used to require NetworkManager and refuse without it. It now runs hostapd on
+# a second virtual interface, so DietPi keeps managing the client connection.
+assert_eq "$(grep -c nmcli "$REPO/setup/pi/configure-ap.sh" || true)" 0 "nothing calls nmcli"
+assert_grep "hostapd" "$REPO/setup/pi/configure-ap.sh" "hostapd runs the access point"
 
 start_case "packages DietPi lacks are bootstrapped by setup"
 # The list used to live in pi-gen's 00-packages and was baked into the image.
@@ -1687,6 +1682,123 @@ assert_no_file /tmp/reboot.calls "no reboot"
 assert_eq "$WD_RC" 1 "exit status 1"
 assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
+
+# ===========================================================================
+banner "the access point is built on hostapd, not NetworkManager"
+# ===========================================================================
+# DietPi manages the client connection with ifupdown and wpa_supplicant. The
+# access point rides on a second virtual interface on the same radio, run by
+# hostapd and dnsmasq, so nothing has to be handed to another network manager and
+# no reboot is needed to finish. A device in a car that comes back from that
+# reboot without wifi is unreachable, which is the opposite of the point.
+
+run_configure_ap () {
+  # $1..: environment assignments for the run, e.g. AP_SSID=x
+  rm -rf /tmp/aproot
+  mkdir -p /tmp/aproot/etc/hostapd /tmp/aproot/etc/dnsmasq.d /tmp/aproot/etc/systemd/system \
+           /tmp/aproot/usr/local/bin /tmp/aproot/run
+  rm -f /tmp/systemctl.calls /tmp/apt.calls /tmp/ap.progress
+  printf '#!/bin/bash\necho "systemctl $*" >> /tmp/systemctl.calls\nexit 0\n' > "$STUBS/systemctl"
+  printf '#!/bin/bash\necho "apt-get $*" >> /tmp/apt.calls\nexit 0\n' > "$STUBS/apt-get"
+  chmod +x "$STUBS/systemctl" "$STUBS/apt-get"
+  # Redirect the absolute paths the script writes into a sandbox, so the test does
+  # not scribble on the container.
+  sed -e 's|=/etc/|=/tmp/aproot/etc/|g' \
+      -e 's|=/usr/local/bin/|=/tmp/aproot/usr/local/bin/|' \
+      -e 's|=/run/|=/tmp/aproot/run/|' \
+      -e 's|mkdir -p /etc/hostapd /etc/dnsmasq.d|mkdir -p /tmp/aproot/etc/hostapd /tmp/aproot/etc/dnsmasq.d|' \
+      "$REPO/setup/pi/configure-ap.sh" > /tmp/configure-ap-sandboxed.sh
+  chmod +x /tmp/configure-ap-sandboxed.sh
+  ( env "$@" /tmp/configure-ap-sandboxed.sh > /tmp/ap.progress 2>&1 ) && AP_RC=0 || AP_RC=$?
+}
+
+start_case "it refuses a configuration that would not work"
+run_configure_ap AP_PASS=longenough
+assert_eq "$AP_RC" 1 "no AP_SSID: exits 1"
+run_configure_ap AP_SSID=teslausb AP_PASS=short
+assert_eq "$AP_RC" 1 "too short a passphrase: exits 1"
+run_configure_ap AP_SSID=teslausb AP_PASS=password
+assert_eq "$AP_RC" 1 "the example passphrase: exits 1"
+
+start_case "it writes a hostapd configuration for the virtual interface"
+run_configure_ap AP_SSID='Tesla Cam' AP_PASS=drivefast99 AP_IP=192.168.66.1 WIFI_COUNTRY=NL
+assert_eq "$AP_RC" 0 "exits 0"
+conf=/tmp/aproot/etc/hostapd/teslausb-ap.conf
+assert_grep "^interface=ap0$" "$conf" "runs on ap0, leaving the client interface alone"
+assert_grep "^ssid=Tesla Cam$" "$conf" "carries the SSID verbatim, spaces and all"
+assert_grep "^wpa_passphrase=drivefast99$" "$conf" "carries the passphrase"
+assert_grep "^wpa=2$" "$conf" "WPA2"
+assert_grep "^rsn_pairwise=CCMP$" "$conf" "CCMP rather than the weaker TKIP"
+assert_grep "^country_code=NL$" "$conf" "honours WIFI_COUNTRY, upper cased"
+assert_grep "^ieee80211d=1$" "$conf" "and obeys the regulatory domain when one is known"
+assert_eq "$(stat -c %a "$conf")" 600 "the passphrase is not world readable"
+
+start_case "and a dnsmasq configuration that only serves the access point"
+dconf=/tmp/aproot/etc/dnsmasq.d/teslausb-ap.conf
+assert_grep "^interface=ap0$" "$dconf" "bound to ap0"
+assert_grep "^bind-dynamic$" "$dconf" "bind-dynamic, since ap0 appears later than dnsmasq starts"
+assert_grep "^dhcp-range=192.168.66.50,192.168.66.150" "$dconf" "hands out addresses in the AP_IP subnet"
+assert_grep "option:router,192.168.66.1" "$dconf" "points clients at the device as their router"
+assert_grep "^dhcp-leasefile=/mutable/" "$dconf" "keeps leases off the read-only root"
+if command -v dnsmasq > /dev/null
+then
+  dnsmasq --test -C "$dconf" > /tmp/dnsmasq.test 2>&1 && dt=0 || dt=1
+  assert_eq "$dt" 0 "dnsmasq itself accepts the file"
+fi
+
+start_case "the country code defaults to US, never the placeholder hostapd rejects"
+# DietPi's own hotspot writes country_code=00 and hostapd then refuses to start:
+# "Invalid country_code '00'".
+run_configure_ap AP_SSID=teslausb AP_PASS=drivefast99
+assert_grep "^country_code=US$" /tmp/aproot/etc/hostapd/teslausb-ap.conf \
+  "US when WIFI_COUNTRY is unset"
+run_configure_ap AP_SSID=teslausb AP_PASS=drivefast99 WIFI_COUNTRY=00
+assert_grep "^country_code=US$" /tmp/aproot/etc/hostapd/teslausb-ap.conf \
+  "and US instead of the 00 placeholder"
+run_configure_ap AP_SSID=teslausb AP_PASS=drivefast99 WIFI_COUNTRY=us
+assert_grep "^country_code=US$" /tmp/aproot/etc/hostapd/teslausb-ap.conf "a lower case country is accepted"
+
+start_case "a different AP_IP moves the whole subnet"
+run_configure_ap AP_SSID=teslausb AP_PASS=drivefast99 AP_IP=10.42.7.1
+assert_grep "^dhcp-range=10.42.7.50,10.42.7.150" /tmp/aproot/etc/dnsmasq.d/teslausb-ap.conf \
+  "the pool follows AP_IP"
+assert_grep "option:router,10.42.7.1" /tmp/aproot/etc/dnsmasq.d/teslausb-ap.conf "so does the router option"
+
+start_case "the service brings the interface up before hostapd"
+unit=/tmp/aproot/etc/systemd/system/teslausb-ap.service
+up=/tmp/aproot/usr/local/bin/teslausb-ap-up
+assert_grep "ExecStartPre=.*teslausb-ap-up" "$unit" "creates the interface first"
+assert_grep "ExecStart=/usr/sbin/hostapd .*/run/teslausb-ap.conf" "$unit" "hostapd reads the generated config"
+assert_grep "Restart=always" "$unit" "comes back if the client changes channel"
+assert_grep "interface add ap0 type __ap" "$up" "adds ap0 to the client's radio"
+assert_grep "set power_save off" "$up" "stops either interface sleeping on a shared radio"
+assert_grep "install -m 600" "$up" "generates the runtime config on tmpfs, for a read-only root"
+assert_grep "MASQUERADE" "$up" "gives access point clients a route out, as shared mode did"
+assert_grep "systemctl enable teslausb-ap.service" /tmp/systemctl.calls "enables the service"
+assert_grep "install iw hostapd dnsmasq" /tmp/apt.calls "installs what it needs"
+assert_eq "$(grep -c "nmcli\|network-manager" "$REPO/setup/pi/configure-ap.sh" || true)" 0 \
+  "NetworkManager is not used at all"
+
+start_case "the channel maths matches the client's frequency"
+# Both interfaces share one radio and cannot be on two channels, so the access
+# point has to follow whatever the client associated on.
+chan_from_freq () {
+  local freq="$1"
+  if [ "$freq" -ge 5000 ]
+  then echo $(( (freq - 5000) / 5 ))
+  else echo $(( (freq - 2407) / 5 ))
+  fi
+}
+assert_eq "$(chan_from_freq 2412)" 1 "2412 MHz is channel 1"
+assert_eq "$(chan_from_freq 2437)" 6 "2437 MHz is channel 6"
+assert_eq "$(chan_from_freq 2462)" 11 "2462 MHz is channel 11"
+assert_eq "$(chan_from_freq 5180)" 36 "5180 MHz is channel 36"
+assert_grep 'freq - 2407' "$up" "the script does the 2.4GHz maths this way"
+assert_grep 'freq - 5000' "$up" "and the 5GHz maths this way"
+
+start_case "setup no longer hands the network to NetworkManager"
+assert_eq "$(grep -c "ensure_networkmanager_for_ap" "$REPO/setup/pi/setup-teslausb" || true)" 0 \
+  "the handover, and its reboot, are gone"
 
 # ===========================================================================
 banner "openssh replaces dropbear"

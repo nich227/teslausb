@@ -25,7 +25,7 @@
 #
 # Usage:
 #   tests/vm/lab.sh [--keep] [--archive cifs|rsync] [--timeout SECONDS]
-#                   [--fast] [--start-dropbear]
+#                   [--fast] [--start-dropbear] [--ap]
 #
 # Nothing here needs root on the host.
 
@@ -60,6 +60,9 @@ do
     # Boot the device with dropbear, as a stock DietPi image does, so teslausb has
     # to replace it with openssh rather than DietPi installing openssh up front.
     --start-dropbear) START_DROPBEAR=1; shift ;;
+    # Configure and then actually exercise the access point, using simulated wifi
+    # radios so a VM with no wireless hardware can still associate to it.
+    --ap)            AP=1; shift ;;
     -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
     *)          echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -80,6 +83,9 @@ readonly NAS_SSH_PORT=2231
 readonly VM_PASSWORD=teslausb-lab
 
 readonly NAS_HOSTNAME=teslanas
+readonly AP_SSID="TESLAUSB LAB AP"
+readonly AP_PASS=labdrivefast
+readonly AP_ADDRESS=192.168.66.1
 readonly SHARE_NAME=teslacam
 readonly SHARE_USER=teslausb
 readonly SHARE_PASS=archivepass
@@ -148,6 +154,8 @@ export SHARE_USER=${SHARE_USER}
 export SHARE_PASSWORD='${SHARE_PASS}'
 export OS_PASSWORD='${VM_PASSWORD}'
 export TESLAUSB_HOSTNAME=teslausb
+$( [ "${AP:-0}" = 1 ] && printf "export AP_SSID='%s'\nexport AP_PASS='%s'\nexport AP_IP='%s'\n" \
+     "$AP_SSID" "$AP_PASS" "$AP_ADDRESS" )
 export UPGRADE_PACKAGES=false
 export SKIP_READONLY=true
 export SKIP_UDC_CHECK=true
@@ -164,6 +172,8 @@ export RSYNC_SERVER=${NAS_IP}
 export RSYNC_PATH=/srv/${SHARE_NAME}
 export OS_PASSWORD='${VM_PASSWORD}'
 export TESLAUSB_HOSTNAME=teslausb
+$( [ "${AP:-0}" = 1 ] && printf "export AP_SSID='%s'\nexport AP_PASS='%s'\nexport AP_IP='%s'\n" \
+     "$AP_SSID" "$AP_PASS" "$AP_ADDRESS" )
 export UPGRADE_PACKAGES=false
 export SKIP_READONLY=true
 export SKIP_UDC_CHECK=true
@@ -735,6 +745,129 @@ then
   else
     not_ok "the clip never arrived on the NAS"
     printf '   archiveloop log: %s\n' "$(on_device 'tail -3 /mutable/archiveloop.log 2>/dev/null' | tr '\n' ' ' | cut -c1-160)"
+  fi
+fi
+
+if [ "${AP:-0}" = 1 ] && [ "$setup_done" = 1 ]
+then
+  # ---------------------------------------------------------------------------
+  log "the access point, with simulated radios"
+  # ---------------------------------------------------------------------------
+  # There is no wireless hardware in a VM, so mac80211_hwsim provides two virtual
+  # radios that can hear each other. One carries teslausb's access point, the
+  # other associates to it as a client would. That exercises hostapd, the WPA2
+  # handshake, dnsmasq's DHCP and reaching the web interface over the AP link.
+  if [ "$(on_device "modprobe mac80211_hwsim radios=2 && echo yes" 2>&1 | tail -1)" = yes ]
+  then
+    ok "simulated wifi radios are available"
+
+    # The service was enabled during setup but had no radio to start on.
+    on_device "systemctl restart teslausb-ap.service" > /dev/null 2>&1 || true
+    sleep 15
+
+    if [ "$(on_device "systemctl is-active teslausb-ap.service")" = active ]
+    then ok "the access point service is running"
+    else
+      not_ok "the access point service did not start"
+      printf '   %s\n' "$(on_device "journalctl -u teslausb-ap -n3 --no-pager" | tr '\n' ' ' | cut -c1-150)"
+    fi
+
+    if [ "$(on_device "iw dev ap0 info > /dev/null 2>&1 && echo yes")" = yes ]
+    then ok "ap0 exists on the same radio as the client interface"
+    else not_ok "ap0 was not created"
+    fi
+
+    if [ "$(on_device "ip -o -4 addr show ap0 | grep -c '$AP_ADDRESS'")" = 1 ]
+    then ok "ap0 has the configured address $AP_ADDRESS"
+    else not_ok "ap0 does not have $AP_ADDRESS"
+    fi
+
+    # teslausb puts ap0 on the same radio as its client interface, which is the
+    # whole point of the arrangement, so the interface used to test against it has
+    # to be on the other simulated radio. Whichever radio hostapd took, pick a
+    # wifi interface that is not on it.
+    client_if=$(on_device "ap_phy=\$(cat /sys/class/net/ap0/phy80211/name 2>/dev/null)
+      for d in /sys/class/net/wlan*
+      do
+        [ -e \"\$d/phy80211/name\" ] || continue
+        [ \"\$(cat \$d/phy80211/name)\" = \"\$ap_phy\" ] && continue
+        basename \"\$d\"
+        break
+      done")
+    if [ -n "$client_if" ]
+    then ok "a separate radio ($client_if) is available to associate from"
+    else not_ok "no radio outside the access point's own to test from"
+    fi
+
+    # A client to associate with. The device itself has no wpa_supplicant, because
+    # this lab device is on ethernet and DietPi only installs it for wifi, so this
+    # is test scaffolding rather than something teslausb needs.
+    on_device "DEBIAN_FRONTEND=noninteractive apt-get -qq -y install wpasupplicant" > /dev/null 2>&1
+    if [ "$(on_device "command -v wpa_supplicant > /dev/null && echo yes")" = yes ]
+    then ok "a wifi client is available to test with"
+    else not_ok "could not install wpasupplicant to test the access point with"
+    fi
+
+    # Associate the second radio, the way a phone in the car would.
+    associated=$(on_device "
+      cat > /tmp/lab-client.conf <<'WPA'
+network={
+  ssid=\"$AP_SSID\"
+  psk=\"$AP_PASS\"
+}
+WPA
+      # -x, not -f: matching the full command line would match this very command,
+      # which contains the words wpa_supplicant and the interface name, and kill
+      # the shell running it.
+      pkill -x wpa_supplicant > /dev/null 2>&1 || true
+      ip link set $client_if up
+      # setsid so logind does not take the daemon down with this ssh session, since
+      # the checks that follow arrive on a later connection.
+      setsid wpa_supplicant -B -D nl80211 -i $client_if -c /tmp/lab-client.conf -f /tmp/lab-wpa.log
+      for i in \$(seq 1 20)
+      do
+        if iw dev $client_if link | grep -q 'Connected to'
+        then echo associated; break
+        fi
+        sleep 2
+      done")
+    if [ "$(printf '%s' "$associated" | tail -1)" = associated ]
+    then ok "a client associated to the access point over WPA2"
+    else
+      not_ok "no client could associate"
+      printf '   %s\n' "$(on_device "tail -3 /tmp/lab-wpa.log" | tr '\n' ' ' | cut -c1-150)"
+    fi
+
+    # DHCP, without letting the client rewrite this machine's routing: the lease
+    # is what proves dnsmasq answered over the AP link.
+    on_device "dhclient -1 -sf /bin/true -lf /tmp/lab-dhcp.leases $client_if > /dev/null 2>&1 || true" > /dev/null
+    client_mac=$(on_device "cat /sys/class/net/$client_if/address")
+    leased=$(on_device "grep -A6 'lease' /tmp/lab-dhcp.leases 2>/dev/null | awk '/fixed-address/ {print \$2}' | tr -d ';' | tail -1")
+    case "$leased" in
+      192.168.66.*)
+        ok "dnsmasq handed the client $leased over the access point"
+        ;;
+      *)
+        not_ok "the client got no address from the access point (got '${leased:-nothing}')"
+        ;;
+    esac
+    if [ "$(on_device "grep -c '$client_mac' /mutable/teslausb-ap.leases 2>/dev/null")" != 0 ]
+    then ok "and recorded the lease on the writable partition"
+    else not_ok "no lease was recorded in /mutable/teslausb-ap.leases"
+    fi
+
+    # Finally, reach the web interface the way someone in the car would.
+    if [ -n "${leased:-}" ]
+    then
+      http=$(on_device "ip addr add $leased/24 dev $client_if 2>/dev/null
+                        curl -s -o /dev/null -m 10 -w '%{http_code}' http://$AP_ADDRESS/ 2>/dev/null")
+      case "$http" in
+        200|401) ok "the web interface answers over the access point ($http)" ;;
+        *)       not_ok "the web interface did not answer over the access point (got '$http')" ;;
+      esac
+    fi
+  else
+    not_ok "mac80211_hwsim is not available, so the access point cannot be tested here"
   fi
 fi
 

@@ -1,6 +1,23 @@
 #!/bin/bash -eu
 
-# based on https://blog.thewalr.us/2017/09/26/raspberry-pi-zero-w-simultaneous-ap-and-managed-mode-wifi/
+# The teslausb access point, so the device is reachable in a car that is nowhere
+# near the home network.
+#
+# Two things share one radio: the client connection that DietPi manages on wlan0,
+# and the access point. That is done with a second virtual interface, ap0, on the
+# same PHY, which is the arrangement described at
+# https://blog.thewalr.us/2017/09/26/raspberry-pi-zero-w-simultaneous-ap-and-managed-mode-wifi/
+#
+# hostapd and dnsmasq run the access point, which is how DietPi runs its own
+# hotspot. This deliberately does not use NetworkManager: DietPi manages the
+# network with ifupdown and wpa_supplicant, and installing NetworkManager to get an
+# access point means handing wlan0 to a different manager mid-install, migrating
+# the credentials and rebooting to finish. A device in a car that comes back from
+# that reboot without wifi is unreachable, and the whole point of the access point
+# is to be reachable. Running hostapd on ap0 leaves wlan0 exactly where it was.
+#
+# The AP follows the client's channel, because both interfaces share one radio and
+# cannot be on two channels at once.
 
 function log_progress () {
   if declare -F setup_progress > /dev/null
@@ -23,102 +40,183 @@ then
   exit 1
 fi
 
-# The access point is built on NetworkManager. DietPi manages the network with
-# ifupdown and wpa_supplicant by default, so NetworkManager has to be in charge
-# before this can work; running both leaves the wifi client connection broken.
-# Rather than switching the network stack out from under a working install, stop
-# here and say what to do.
-if ! systemctl -q is-enabled NetworkManager.service 2> /dev/null
+readonly AP_ADDRESS="${AP_IP:-192.168.66.1}"
+# The DHCP pool sits in the same /24 as the access point's own address.
+AP_SUBNET="${AP_ADDRESS%.*}"
+readonly AP_SUBNET
+# US unless the config says otherwise, matching what teslausb has always assumed
+# for wifi. The "world" placeholder 00 that DietPi's own hotspot writes is not
+# usable: hostapd refuses to start with "Invalid country_code '00'", so anything
+# that is not a pair of letters becomes US.
+AP_COUNTRY="${WIFI_COUNTRY:-US}"
+case "$AP_COUNTRY" in
+  [A-Za-z][A-Za-z]) AP_COUNTRY=$(printf '%s' "$AP_COUNTRY" | tr '[:lower:]' '[:upper:]') ;;
+  *) AP_COUNTRY=US ;;
+esac
+readonly AP_COUNTRY
+
+# The template lives on the root filesystem, which is read-only in normal
+# operation. The copy hostapd actually reads is generated on tmpfs at start, with
+# the channel filled in, because the channel is only known once the client has
+# associated.
+readonly AP_CONF=/etc/hostapd/teslausb-ap.conf
+readonly AP_RUNTIME_CONF=/run/teslausb-ap.conf
+readonly AP_DNSMASQ=/etc/dnsmasq.d/teslausb-ap.conf
+readonly AP_UP=/usr/local/bin/teslausb-ap-up
+readonly AP_UNIT=/etc/systemd/system/teslausb-ap.service
+
+# iw is force-installed because it would otherwise be autoremoved along with
+# alsa-utils later in setup.
+log_progress "installing hostapd, dnsmasq and iw"
+DEBIAN_FRONTEND=noninteractive apt-get -y install iw hostapd dnsmasq || exit 1
+
+# The packaged hostapd service reads /etc/hostapd/hostapd.conf and would fight
+# ours for the interface. Ours is a separate unit with its own config.
+systemctl disable --now hostapd.service &> /dev/null || true
+systemctl unmask hostapd.service &> /dev/null || true
+
+log_progress "writing the access point configuration"
+mkdir -p /etc/hostapd /etc/dnsmasq.d
+
+# channel here is a default: teslausb-ap-up copies this to tmpfs and fills in
+# whatever channel the client connection is using before hostapd starts.
+cat > "$AP_CONF" <<EOF
+# Written by teslausb setup. Edit teslausb_setup_variables.conf instead.
+interface=ap0
+driver=nl80211
+ssid=${AP_SSID}
+country_code=${AP_COUNTRY}
+ieee80211d=1
+hw_mode=g
+channel=6
+ignore_broadcast_ssid=0
+auth_algs=1
+wpa=2
+wpa_passphrase=${AP_PASS}
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+EOF
+chmod 600 "$AP_CONF"
+
+# bind-dynamic rather than bind-interfaces, because ap0 does not exist yet when
+# dnsmasq starts at boot, and dnsmasq must not take over port 53 on every other
+# interface either.
+cat > "$AP_DNSMASQ" <<EOF
+# Written by teslausb setup.
+interface=ap0
+bind-dynamic
+dhcp-range=${AP_SUBNET}.50,${AP_SUBNET}.150,12h
+dhcp-option=option:router,${AP_ADDRESS}
+dhcp-option=option:dns-server,${AP_ADDRESS}
+# The root filesystem is read-only in normal operation, so the leases live on the
+# partition that is not.
+dhcp-leasefile=/mutable/teslausb-ap.leases
+EOF
+
+cat > "$AP_UP" <<'EOF'
+#!/bin/bash -eu
+
+# Brings up ap0 and points hostapd at the right channel. Run by
+# teslausb-ap.service before hostapd starts.
+
+AP_ADDRESS="__AP_ADDRESS__"
+AP_CONF="__AP_CONF__"
+AP_RUNTIME_CONF="__AP_RUNTIME_CONF__"
+
+log () { echo "teslausb-ap: $1"; }
+
+# The client interface is whichever wifi interface is not ours. It may not exist
+# yet at boot, so wait a while for it.
+client=""
+for _ in {1..30}
+do
+  client=$(iw dev | awk '/Interface/ {print $2}' | grep -v '^ap0$' | head -1)
+  [ -n "$client" ] && break
+  sleep 2
+done
+
+if [ -z "$client" ]
 then
-  log_progress "STOP: AP_SSID is set, but NetworkManager is not managing the network."
-  log_progress "The teslausb access point needs NetworkManager, while DietPi defaults to"
-  log_progress "ifupdown plus wpa_supplicant. Either hand networking over to"
-  log_progress "NetworkManager first ('apt install network-manager', move your wifi"
-  log_progress "settings across, reboot), or remove AP_SSID from"
-  log_progress "teslausb_setup_variables.conf and configure wifi with dietpi-config"
-  log_progress "(Network Options: Adapters) instead."
+  log "no wifi interface found, cannot start the access point"
   exit 1
 fi
+log "client interface is $client"
 
-function nm_get_wifi_client_device () {
-  for _ in {1..5}
-  do
-    WLAN="$(nmcli -t -f TYPE,DEVICE c show --active | grep 802-11-wireless | grep -v ":ap0$" | cut -c 17-)"
-    if [ -n "$WLAN" ]
-    then
-      break;
-    fi
-    log_progress "Waiting for wifi interface to come back up"
-    sleep 5
-  done
-
-  [ -n "$WLAN" ] && return 0
-
-  log_progress "Couldn't determine wifi client device"
-  nmcli c show
-  return 1
-}
-
-function nm_add_ap () {
-  nm_get_wifi_client_device || return 1
-
-  if ! iw dev ap0 info &> /dev/null
-  then
-    # create additional virtual interface for the wifi device
-    iw dev "$WLAN" interface add ap0 type __ap || return 1
-  fi
-
-  # turn off power savings for both interfaces since they use
-  # the same underlying hardware, and we don't want one to go
-  # into power save mode just because the other is idle
-  iw "$WLAN" set power_save off || return 1
-  iw ap0 set power_save off || return 1
-
-  # set up access point on the virtual interface using networkmanager
-  nmcli con delete TESLAUSB_AP &> /dev/null || true
-  nmcli con add type wifi ifname ap0 mode ap con-name TESLAUSB_AP ssid "$AP_SSID" || return 1
-  # don't set band and channel, because that is controlled by the $WLAN interface
-  #nmcli con modify TESLAUSB_AP 802-11-wireless.band bg
-  #nmcli con modify TESLAUSB_AP 802-11-wireless.channel 6
-  nmcli con modify TESLAUSB_AP 802-11-wireless-security.key-mgmt wpa-psk || return 1
-  nmcli con modify TESLAUSB_AP 802-11-wireless-security.psk "$AP_PASS" || return 1
-  IP=${AP_IP:-"192.168.66.1"}
-  nmcli con modify TESLAUSB_AP ipv4.addr "$IP/24" || return 1
-  nmcli con modify TESLAUSB_AP ipv4.method shared || return 1
-  nmcli con modify TESLAUSB_AP ipv6.method disabled || return 1
-  cat > /etc/network/if-up.d/teslausb-ap << EOF
-#!/bin/bash
-
-if [ "\$IFACE" = "$WLAN" ]
+if ! iw dev ap0 info &> /dev/null
 then
-  iw dev $WLAN interface add ap0 type __ap
-  iw "$WLAN" set power_save off
-  iw ap0 set power_save off
-  nmcli con up TESLAUSB_AP
+  log "creating ap0 on the same radio"
+  iw dev "$client" interface add ap0 type __ap
 fi
 
+# Both interfaces share the radio, so neither may sleep just because the other is
+# idle.
+iw dev "$client" set power_save off || true
+iw dev ap0 set power_save off || true
+
+# One radio cannot be on two channels, so the access point follows the client. If
+# the client has not associated, whatever channel is already in the config stands.
+freq=$(iw dev "$client" link 2> /dev/null | awk '/freq/ {print $2; exit}')
+if [ -n "${freq:-}" ]
+then
+  if [ "$freq" -ge 5000 ]
+  then
+    channel=$(( (freq - 5000) / 5 ))
+    band=a
+  else
+    channel=$(( (freq - 2407) / 5 ))
+    band=g
+  fi
+  log "following the client onto channel $channel"
+fi
+
+# Generate the config hostapd reads. This is on tmpfs, so it works with a
+# read-only root, and it is rebuilt on every start and restart.
+install -m 600 "$AP_CONF" "$AP_RUNTIME_CONF"
+if [ -n "${channel:-}" ]
+then
+  sed -i "s/^channel=.*/channel=$channel/; s/^hw_mode=.*/hw_mode=$band/" "$AP_RUNTIME_CONF"
+fi
+
+ip addr flush dev ap0 || true
+ip addr add "$AP_ADDRESS/24" dev ap0
+ip link set ap0 up
+
+# Give clients of the access point a route out through the client connection, the
+# way NetworkManager's shared mode used to.
+sysctl -q -w net.ipv4.ip_forward=1 || true
+if ! iptables -t nat -C POSTROUTING -o "$client" -j MASQUERADE &> /dev/null
+then
+  iptables -t nat -A POSTROUTING -o "$client" -j MASQUERADE || true
+fi
 EOF
-  chmod a+x /etc/network/if-up.d/teslausb-ap || return 1
-}
+sed -i "s|__AP_ADDRESS__|${AP_ADDRESS}|; s|__AP_CONF__|${AP_CONF}|; s|__AP_RUNTIME_CONF__|${AP_RUNTIME_CONF}|" "$AP_UP"
+chmod 755 "$AP_UP"
 
+cat > "$AP_UNIT" <<EOF
+[Unit]
+Description=teslausb access point
+# wpa_supplicant owns the client connection; the access point rides on the same
+# radio, so it starts after the network is being brought up.
+After=network.target
+Wants=network.target
 
-# force-install iw because otherwise it will get autoremoved when
-# alsa-utils is removed later
-apt-get -y install iw || exit 1
+[Service]
+Type=simple
+ExecStartPre=${AP_UP}
+ExecStart=/usr/sbin/hostapd ${AP_RUNTIME_CONF}
+# The client can move to another channel, which takes the access point down with
+# it. Restarting re-reads the channel and follows.
+Restart=always
+RestartSec=15
 
-if ! nm_add_ap
-then
-  # Network Manager won't allow adding connections when started with a
-  # read-only root fs, even if the root fs is not writeable, so try
-  # again after restarting Network Manager
-  log_progress "Retrying after restarting Network Manager"
-  systemctl restart NetworkManager.service
-  if ! nm_add_ap
-  then
-    log_progress "STOP: Failed to configure AP"
-    exit 1
-  fi
-fi
+[Install]
+WantedBy=multi-user.target
+EOF
 
-log_progress "AP configured"
-exit 0
+systemctl daemon-reload
+systemctl enable teslausb-ap.service
+systemctl restart dnsmasq.service &> /dev/null || \
+  log_progress "WARNING: dnsmasq did not restart; the access point will hand out no addresses"
+
+log_progress "access point configured on ap0 at ${AP_ADDRESS}, ssid ${AP_SSID}"

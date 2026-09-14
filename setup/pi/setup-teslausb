@@ -467,11 +467,6 @@ readonly TESLAUSB_PACKAGES=(
   libfuse-dev
 )
 
-# The teslausb access point is configured through NetworkManager. Raspberry Pi
-# OS ships and enables it; DietPi manages the network with ifupdown instead. To
-# keep AP_SSID working the same way on DietPi, hand networking over to
-# NetworkManager once, carrying the wifi credentials across so the device does
-# not lose its connection, then reboot into it.
 function package_installed () {
   dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q "install ok installed"
 }
@@ -523,85 +518,6 @@ function ensure_openssh () {
   fi
 }
 
-function ensure_networkmanager_for_ap () {
-  if systemctl -q is-enabled NetworkManager.service 2> /dev/null
-  then
-    setup_progress "NetworkManager is already managing the network"
-    return 0
-  fi
-
-  if [ -e /root/TESLAUSB_NM_HANDOVER_DONE ]
-  then
-    setup_progress "WARNING: NetworkManager handover already attempted but it is not enabled."
-    setup_progress "WARNING: skipping access point setup. Configure NetworkManager by hand,"
-    setup_progress "WARNING: or remove AP_SSID from the config."
-    return 1
-  fi
-
-  setup_progress "Installing NetworkManager so the access point can be configured"
-  if ! DEBIAN_FRONTEND=noninteractive apt-get -y install network-manager
-  then
-    setup_progress "STOP: could not install network-manager"
-    return 1
-  fi
-
-  # Carry the wifi credentials over, otherwise the device comes back up with
-  # NetworkManager in charge and no network to connect to. Prefer the values from
-  # the config, and fall back to whatever DietPi already has configured.
-  local ap_ssid="${SSID:-}"
-  local ap_pass="${WIFIPASS:-}"
-  if [ -z "$ap_ssid" ] && [ -e /etc/wpa_supplicant/wpa_supplicant.conf ]
-  then
-    ap_ssid=$(sed -n 's/^[[:blank:]]*ssid="\(.*\)"/\1/p' /etc/wpa_supplicant/wpa_supplicant.conf | head -1)
-    ap_pass=$(sed -n 's/^[[:blank:]]*psk="\(.*\)"/\1/p' /etc/wpa_supplicant/wpa_supplicant.conf | head -1)
-  fi
-
-  if [ -n "$ap_ssid" ]
-  then
-    setup_progress "Handing the '$ap_ssid' connection to NetworkManager"
-    mkdir -p /etc/NetworkManager/system-connections
-    cat > "/etc/NetworkManager/system-connections/${ap_ssid}.nmconnection" <<EOF
-[connection]
-id=${ap_ssid}
-type=wifi
-autoconnect=true
-
-[wifi]
-mode=infrastructure
-ssid=${ap_ssid}
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=${ap_pass}
-
-[ipv4]
-method=auto
-
-[ipv6]
-method=auto
-EOF
-    chmod 600 "/etc/NetworkManager/system-connections/${ap_ssid}.nmconnection"
-  else
-    setup_progress "WARNING: no wifi credentials found to hand over; if this device is"
-    setup_progress "WARNING: on wifi it may come back up without a connection."
-  fi
-
-  # Stop DietPi's ifupdown from also driving the adapter.
-  if [ -e /etc/network/interfaces ]
-  then
-    cp /etc/network/interfaces /etc/network/interfaces.teslausb-backup
-    # comment out the wireless stanzas, leaving ethernet alone
-    sed -i '/^[[:blank:]]*\(auto\|allow-hotplug\|iface\)[[:blank:]]\+wlan/s/^/#teslausb# /' \
-      /etc/network/interfaces
-  fi
-
-  systemctl enable NetworkManager.service
-  touch /root/TESLAUSB_NM_HANDOVER_DONE
-
-  setup_progress "Rebooting so NetworkManager takes over before the access point is set up"
-  reboot
-  exit 0
-}
 
 function install_base_packages () {
   local -a missing=()
@@ -1184,11 +1100,8 @@ fi
 
 if [ -n "${AP_SSID:+x}" ]
 then
-  # The access point is built with NetworkManager, which Raspberry Pi OS had by
-  # default and DietPi does not. Provision it here so AP_SSID keeps working
-  # exactly as it did, rather than making the user set up the network stack by
-  # hand.
-  ensure_networkmanager_for_ap
+  # hostapd and dnsmasq on a second virtual interface, so DietPi keeps managing
+  # the client connection on wlan0 and nothing has to be handed over.
   copy_script setup/pi/configure-ap.sh /tmp
   /tmp/configure-ap.sh
 fi
