@@ -897,47 +897,6 @@ log_progress "Using archive module: $archive_module"
 install_archive_scripts /root/bin "$archive_module"
 /tmp/verify-and-configure-archive.sh
 
-# The console is the only way in when a device will not come up on the network, so it
-# is worth it actually showing a prompt. See run/redraw-console-prompt.sh for why a
-# timer is needed rather than doing this at boot: the output that paints over the
-# prompt keeps arriving for the best part of a minute, and the getty starts as part of
-# multi-user.target, so anything ordered there runs too early.
-function install_console_prompt_redraw () {
-  local install_path="$1"
-  log_progress "Installing the console prompt redraw"
-  copy_script run/redraw-console-prompt.sh "$install_path"
-
-  cat << EOF > /etc/systemd/system/teslausb-console-prompt.service
-[Unit]
-Description=Redraw the console prompt once boot output has finished
-
-[Service]
-Type=oneshot
-ExecStart=$install_path/redraw-console-prompt.sh
-EOF
-
-  cat << EOF > /etc/systemd/system/teslausb-console-prompt.timer
-[Unit]
-Description=Redraw the console prompt once the boot has gone quiet
-
-[Timer]
-# Repeating, not one-shot: setup writes to the console for several minutes after the
-# first boot, so a single redraw at 75s gets painted over again. The script does nothing
-# while a prompt is already on screen, so this is quiet once the console has settled.
-OnBootSec=75s
-OnUnitActiveSec=30s
-AccuracySec=5s
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable teslausb-console-prompt.timer &> /dev/null || \
-    log_progress "WARNING: could not enable the console prompt timer"
-}
-
-install_console_prompt_redraw /root/bin
 install_bluetooth_support
 
 systemctl disable teslausb.service || true

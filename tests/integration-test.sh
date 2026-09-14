@@ -1734,18 +1734,6 @@ assert_grep "^install_bluetooth_support$" "$REPO/setup/pi/configure.sh" \
 assert_grep "apt-cache policy" "$REPO/setup/pi/configure.sh" \
   "skipping any package this platform does not have"
 
-start_case "the console prompt is redrawn once the boot has gone quiet"
-# The shell is alive the whole time, it just has no prompt on screen: readline draws
-# one when it starts reading, and boot output then covers it. A newline pushed into the
-# terminal is the same as pressing Enter, which a device in a glovebox cannot do.
-assert_grep "TIOCSTI" "$REPO/run/redraw-console-prompt.sh" "a newline is injected into the terminal"
-assert_grep "SIGWINCH does not work" "$REPO/run/redraw-console-prompt.sh" \
-  "and the script records that SIGWINCH was tried and does not work"
-assert_grep "exit 0" "$REPO/run/redraw-console-prompt.sh" "it never fails, being cosmetic"
-assert_grep "OnBootSec=75s" "$REPO/setup/pi/configure.sh" "a timer runs it after boot settles"
-assert_grep "install_console_prompt_redraw" "$REPO/setup/pi/configure.sh" "and setup installs it"
-assert_grep "redraw-console-prompt.sh" "$REPO/setup/pi/configure.sh" "copying the script into place"
-
 start_case "the console logs in after the units that write to it"
 # The shell drew its prompt and DietPi's postboot output then landed on top, leaving a
 # console with a banner and no prompt: alive, but nothing to type at.

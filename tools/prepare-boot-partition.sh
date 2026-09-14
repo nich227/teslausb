@@ -353,10 +353,11 @@ then
 # no keyboard. Without this it waits at the login prompt forever, never brings up
 # wifi, and can never be reached.
 [Unit]
-# Ordered after DietPi's own postboot output, which is tidier but not sufficient on its
-# own: boot messages keep arriving afterwards and paint over the prompt regardless.
-# teslausb installs a timer that asks the shell to redraw once that has finished, see
-# run/redraw-console-prompt.sh.
+# Ordered after DietPi's own postboot output. Expect the console to show boot output with
+# no prompt under it: the shell draws a prompt as soon as it starts and later output
+# paints over it, and readline only draws another when it begins reading a line. The
+# shell is running and will do whatever is typed, and the first keypress brings the
+# prompt back, so a console that looks dead this way is not.
 After=dietpi-postboot.service
 
 [Service]
