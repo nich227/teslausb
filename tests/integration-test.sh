@@ -913,6 +913,9 @@ AUTO_SETUP_NET_HOSTNAME=DietPi
 AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0
 SURVEY_OPTED_IN=-1
 EOF
+  # DietPi's own scripts live here on images where /boot is the real thing, and the
+  # script uses their presence to tell that from a firmware partition.
+  mkdir -p /tmp/bootfs/dietpi
 }
 
 run_prepare () {
