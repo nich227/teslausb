@@ -50,6 +50,61 @@ log () { echo "==> $*"; }
      Flash a DietPi image from https://dietpi.com/#download first."
 
 # ---------------------------------------------------------------------------
+# Which directory does the running system actually read?
+#
+# On the Raspberry Pi images it is not the partition you can see from a PC. Those
+# use the Debian layout, where the FAT partition is mounted at /boot/firmware and
+# /boot lives on the root filesystem, and DietPi reads /boot/dietpi.txt,
+# /boot/dietpi-wifi.txt and /boot/Automation_Custom_Script.sh from there. The FAT
+# partition carries its own copies, but nothing reads them, so configuring only
+# what a PC can see leaves a device that boots into an interactive DietPi with no
+# network. That happened on real hardware; the single-partition images used for
+# testing hid it, because there /boot is on the root filesystem already.
+#
+# So: if the given partition carries DietPi's own scripts, it is the real thing.
+# Otherwise it is a firmware partition, and the root filesystem beside it has to
+# be mounted to put the config where it will be read.
+# ---------------------------------------------------------------------------
+TARGET="$BOOT"
+ROOTFS_MOUNT=""
+
+cleanup_rootfs () {
+  [ -n "$ROOTFS_MOUNT" ] || return 0
+  sync
+  umount "$ROOTFS_MOUNT" 2> /dev/null || true
+  rmdir "$ROOTFS_MOUNT" 2> /dev/null || true
+}
+trap cleanup_rootfs EXIT
+
+if [ ! -d "$BOOT/dietpi" ]
+then
+  log "this is a firmware partition; DietPi reads its config from the root filesystem"
+  boot_source=$(findmnt -no SOURCE --target "$BOOT") || \
+    die "cannot work out which device $BOOT is on"
+  case "$boot_source" in
+    *[0-9]p[0-9]) rootfs_dev="${boot_source%p*}p$(( ${boot_source##*p} + 1 ))" ;;
+    *[0-9])       rootfs_dev="${boot_source%[0-9]}$(( ${boot_source##*[a-z]} + 1 ))" ;;
+    *) die "cannot work out the root partition next to $boot_source" ;;
+  esac
+  [ -b "$rootfs_dev" ] || die "expected the root filesystem on $rootfs_dev, which does not exist"
+
+  if existing=$(findmnt -no TARGET "$rootfs_dev" 2> /dev/null) && [ -n "$existing" ]
+  then
+    log "using the root filesystem already mounted at $existing"
+    TARGET="$existing/boot"
+  else
+    ROOTFS_MOUNT=$(mktemp -d)
+    mount "$rootfs_dev" "$ROOTFS_MOUNT" || \
+      die "could not mount $rootfs_dev. This needs root, and a Linux machine, because
+     the root filesystem is ext4."
+    log "mounted $rootfs_dev to write the config where DietPi reads it"
+    TARGET="$ROOTFS_MOUNT/boot"
+  fi
+
+  [ -f "$TARGET/dietpi.txt" ] || die "$TARGET has no dietpi.txt, so this is not a DietPi root filesystem"
+fi
+
+# ---------------------------------------------------------------------------
 # Read the teslausb config. It is sourced in a subshell so a broken file cannot
 # affect this script, and only the values needed here are pulled back out.
 # ---------------------------------------------------------------------------
@@ -95,17 +150,17 @@ OS_PASSWORD=$(conf_value OS_PASSWORD "")
 # Copy the teslausb pieces
 # ---------------------------------------------------------------------------
 log "installing teslausb_setup_variables.conf"
-install -m 600 "$CONF" "$BOOT/teslausb_setup_variables.conf"
+install -m 600 "$CONF" "$TARGET/teslausb_setup_variables.conf"
 
 log "installing Automation_Custom_Script.sh"
-install -m 755 "$REPO/dietpi/Automation_Custom_Script.sh" "$BOOT/Automation_Custom_Script.sh"
+install -m 755 "$REPO/dietpi/Automation_Custom_Script.sh" "$TARGET/Automation_Custom_Script.sh"
 
 # ---------------------------------------------------------------------------
 # Update dietpi.txt in place. Only the keys teslausb depends on are touched, so
 # everything else the user configured is left alone.
 # ---------------------------------------------------------------------------
 set_dietpi_key () {
-  local key="$1" value="$2" file="$BOOT/dietpi.txt"
+  local key="$1" value="$2" file="$TARGET/dietpi.txt"
   if grep -q "^${key}=" "$file"
   then
     sed -i "s|^${key}=.*|${key}=${value}|" "$file"
@@ -126,7 +181,7 @@ if [ -n "$OS_PASSWORD" ]
 then
   set_dietpi_key AUTO_SETUP_GLOBAL_PASSWORD "$OS_PASSWORD"
 else
-  current_pw=$(sed -n '/^[[:blank:]]*AUTO_SETUP_GLOBAL_PASSWORD=/{s/^[^=]*=//p;q}' "$BOOT/dietpi.txt")
+  current_pw=$(sed -n '/^[[:blank:]]*AUTO_SETUP_GLOBAL_PASSWORD=/{s/^[^=]*=//p;q}' "$TARGET/dietpi.txt")
   if [ "$current_pw" = "dietpi" ]
   then
     log "WARNING: the login password is still DietPi's default ('dietpi')."
@@ -145,7 +200,7 @@ fi
 # teslausb asks for OpenSSH, always. Its rsync archive backend shells out to ssh,
 # which Dropbear does not provide, so Dropbear is not a working choice here even
 # though DietPi recommends it.
-ssh_index=$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' "$BOOT/dietpi.txt")
+ssh_index=$(sed -n '/^[[:blank:]]*AUTO_SETUP_SSH_SERVER_INDEX=/{s/^[^=]*=//p;q}' "$TARGET/dietpi.txt")
 if [ "$ssh_index" = -1 ]
 then
   log "dietpi.txt: asking for OpenSSH instead of Dropbear, which cannot serve the rsync archive path"
@@ -162,12 +217,12 @@ then
   set_dietpi_key AUTO_SETUP_NET_WIFI_ENABLED 1
   set_dietpi_key AUTO_SETUP_NET_WIFI_COUNTRY_CODE "$WIFI_COUNTRY"
   log "writing dietpi-wifi.txt for '$SSID'"
-  cat > "$BOOT/dietpi-wifi.txt" <<EOF
+  cat > "$TARGET/dietpi-wifi.txt" <<EOF
 aWIFI_SSID[0]='${SSID}'
 aWIFI_KEY[0]='${WIFIPASS}'
 aWIFI_KEYMGR[0]='WPA-PSK'
 EOF
-  chmod 600 "$BOOT/dietpi-wifi.txt"
+  chmod 600 "$TARGET/dietpi-wifi.txt"
 else
   log "WARNING: no SSID/WIFIPASS in the config."
   log "WARNING: this device will have no network on first boot, and DietPi needs one"
