@@ -31,7 +31,10 @@ while IFS= read -r line
 do
   s=$(printf '%s' "$line" | sed -n 's/.*start=[[:space:]]*\([0-9][0-9]*\).*/\1/p')
   z=$(printf '%s' "$line" | sed -n 's/.*size=[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-  [ -n "$s" ] && [ -n "$z" ] || continue
+  if [ -z "$s" ] || [ -z "$z" ]
+  then
+    continue
+  fi
   if [ "$z" -gt "$best" ]
   then
     best="$z"

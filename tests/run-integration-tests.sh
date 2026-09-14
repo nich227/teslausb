@@ -55,11 +55,22 @@ log "DietPi base image ($BASE_TAG)"
 "$SCRIPT_DIR/docker/build-dietpi-base.sh" "$ARCH" "$DISTRO"
 
 log "building $TEST_TAG"
-docker build -q \
+# Output is captured rather than discarded: a failing build here used to print the
+# Dockerfile excerpt and nothing else, since the reason goes to stdout.
+build_log=$(mktemp)
+if ! docker build \
+  --progress=plain \
   --build-arg "BASE_IMAGE=$BASE_TAG" \
   -f "$SCRIPT_DIR/docker/Dockerfile" \
   -t "$TEST_TAG" \
-  "$REPO" > /dev/null
+  "$REPO" > "$build_log" 2>&1
+then
+  echo "build of $TEST_TAG failed:"
+  cat "$build_log"
+  rm -f "$build_log"
+  exit 1
+fi
+rm -f "$build_log"
 
 log "integration tests in DietPi $DISTRO ($ARCH)"
 # SYS_ADMIN (plus unconfined apparmor, which otherwise blocks mount) lets the

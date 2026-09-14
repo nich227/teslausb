@@ -111,8 +111,9 @@ step ()   { printf '    %s\n' "$*"; }
 ok ()     { pass_count=$(( pass_count + 1 )); printf '   ok: %s\n' "$1"; }
 not_ok () { fail_count=$(( fail_count + 1 )); printf '   FAIL: %s\n' "$1"; }
 
-# invoked via trap
-# shellcheck disable=SC2329
+# invoked via trap, so shellcheck cannot see it being called: 0.9.0 calls the body
+# unreachable (SC2317), newer versions call the function unused (SC2329)
+# shellcheck disable=SC2329,SC2317
 cleanup () {
   [ "$KEEP" = 1 ] && return 0
   local pid

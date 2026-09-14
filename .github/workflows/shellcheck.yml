@@ -6,7 +6,20 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v4
+      # The runner image ships whatever shellcheck it happens to ship, which is 0.9.0
+      # and drifts from the version the test suite pins in its container. The two report
+      # different findings: 0.9.0 raises around forty SC2317 "unreachable command"
+      # false positives against functions the test harness invokes indirectly, which
+      # later versions replaced with the narrower SC2329. Pinning the same version in
+      # both places is what makes a clean local run mean a clean CI run.
+      - name: Install the pinned ShellCheck
+        shell: bash
+        run: |
+          version=0.11.0
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.linux.x86_64.tar.xz" |
+            sudo tar -xJ --strip-components=1 -C /usr/local/bin "shellcheck-v${version}/shellcheck"
+          shellcheck --version
       - name: Run ShellCheck
         shell: bash
         run: |
