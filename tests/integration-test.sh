@@ -1461,7 +1461,14 @@ install_tessie_stub
 watchdog_env () {
   rm -f /tmp/reboot.calls
   local -a extra=( "$@" )
+  # A container sees the host's /proc/uptime, and the watchdog holds off for the first
+  # twenty minutes of a boot, so leaving this to the environment means the whole section
+  # passes on a workstation that has been up for days and does nothing at all on a CI
+  # runner that has been up for two minutes. The cases that care about the gate override
+  # it themselves, and a later value in the environment wins over an earlier one.
+  printf '86400.00 86400.00\n' > /tmp/watchdog-uptime
   local -a base=(
+    UPTIME_FILE=/tmp/watchdog-uptime
     UDC_DIR=/run/udc
     REBOOT_CMD="$STUBS/reboot"
     RSYNC_LOG=/tmp/rsync.log
@@ -1483,24 +1490,12 @@ watchdog_env () {
   return 0
 }
 
+# The same thing as watchdog_env, but reading the setup conf the cases below write. It
+# delegates rather than repeating the environment: the duplicate copy did not have the
+# uptime pin, which is how the whole section came to depend on how long the host had
+# been up.
 watchdog () {
-  rm -f /tmp/reboot.calls
-  if [ -n "${COVERAGE:-}" ]
-  then
-    mkdir -p "$TRACE_DIR"
-    env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" \
-        RSYNC_LOG=/tmp/rsync.log SETUP_CONF=/tmp/setup.conf \
-        BOUNDARY_WAIT_SECS=5 TESSIE_API_TOKEN=token TESSIE_VIN=VIN \
-        BASH_ENV="$COV_INIT" COV_TRACE="$TRACE_DIR/usb-link-watchdog.sh.$$.trace" \
-        bash /root/bin/usb-link-watchdog.sh
-  else
-    env UDC_DIR=/run/udc REBOOT_CMD="$STUBS/reboot" \
-        RSYNC_LOG=/tmp/rsync.log SETUP_CONF=/tmp/setup.conf \
-        BOUNDARY_WAIT_SECS=5 TESSIE_API_TOKEN=token TESSIE_VIN=VIN \
-        bash /root/bin/usb-link-watchdog.sh
-  fi
-  WD_RC=$?
-  return 0
+  watchdog_env SETUP_CONF=/tmp/setup.conf
 }
 
 set_cam_idle () { touch -d "@$(( $(date +%s) - $1 * 60 ))" /backingfiles/cam_disk.bin; }
