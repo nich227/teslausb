@@ -66,6 +66,20 @@ function dietpi_software () {
 # with it, including the mount point configure-web.sh made for nginx's log tmpfs.
 # Recreate it on the real /var/log, while the root filesystem is still writable,
 # otherwise that mount fails on the next boot and takes local-fs.target with it.
+# DietPi ships dietpi-ramlog_disable.service, which writes its log into
+# /var/lib/dietpi/logs. Once RAMlog itself has been removed the unit has nothing to
+# do, and once the root filesystem is read-only its redirection fails and dash exits
+# 2, so every boot ends with a failed unit for no reason.
+function disable_dietpi_ramlog_units () {
+  local unit
+  for unit in dietpi-ramlog_disable.service dietpi-ramlog.service
+  do
+    systemctl is-enabled "$unit" &> /dev/null || continue
+    log_progress "disabling $unit, which has nothing left to do"
+    systemctl disable "$unit" &> /dev/null || log_progress "WARNING: could not disable $unit"
+  done
+}
+
 function restore_nginx_log_mountpoint () {
   grep -q "/var/log/nginx" /etc/fstab || return 0
   [ -d /var/log/nginx ] && return 0
@@ -107,6 +121,7 @@ function remove_dietpi_ramlog () {
 
 remove_dietpi_ramlog
 restore_nginx_log_mountpoint
+disable_dietpi_ramlog_units
 
 # adb service exists on some distributions and interferes with mass storage emulation
 systemctl disable amlogic-adbd &> /dev/null || true
