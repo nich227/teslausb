@@ -8,3 +8,6 @@
 # macOS AppleDouble metadata, created when the repo is served over SMB/AFP
 ._*
 .AppleDouble
+
+# images built by tools/build-image.sh
+teslausb-*.img.xz

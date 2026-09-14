@@ -1274,6 +1274,148 @@ run_bootstrap
 assert_file /boot/teslausb-headless-setup.log "wrote the headless setup log"
 
 # ===========================================================================
+banner "the flashable image: Automation_Custom_PreScript.sh"
+
+# The image can only ask the user to edit the boot partition, because that is the only
+# partition Windows and macOS both mount, while DietPi reads its settings from the ext4
+# root filesystem. This hook bridges the two, and it has to run before DietPi's own
+# network setup or the first boot has no wifi to work with.
+#
+# /boot belongs to DietPi in this container, so it is snapshotted and put back afterwards.
+prescript_env () {
+  rm -rf /tmp/pre /boot/teslausb-local /boot/firmware
+  mkdir -p /tmp/pre /boot/firmware
+  [ -f /tmp/pre-dietpi.txt ] || cp /boot/dietpi.txt /tmp/pre-dietpi.txt
+  cp /tmp/pre-dietpi.txt /boot/dietpi.txt
+  # This DietPi has no dietpi-wifi.txt of its own, and restoring a file that was never
+  # there left one case's credentials lying around for the next one to find.
+  if [ -f /tmp/pre-wifi.txt ]
+  then
+    cp /tmp/pre-wifi.txt /boot/dietpi-wifi.txt
+  else
+    rm -f /boot/dietpi-wifi.txt
+  fi
+  rm -f /boot/firmware/teslausb-headless-setup.log
+}
+
+stage_repo_tar () {
+  mkdir -p /boot/teslausb-local
+  tar -C "$REPO" -cf /boot/teslausb-local/repo.tar \
+    tools/prepare-boot-partition.sh dietpi/Automation_Custom_Script.sh \
+    dietpi/teslausb_setup_variables.conf.sample 2> /dev/null
+}
+
+write_image_conf () {
+  cat > /boot/firmware/teslausb_setup_variables.conf << CONF
+export TESLAUSB_HOSTNAME=teslausb-image
+${1:-}
+CONF
+}
+
+run_prescript () {
+  ( trace_bash "$REPO/dietpi/Automation_Custom_PreScript.sh" ) > /tmp/pre.log 2>&1
+  PRE_RC=$?
+  return 0
+}
+
+start_case "a card prepared on a computer needs nothing from this"
+prescript_env
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0"
+assert_grep "nothing to do" /tmp/pre.log "says there is nothing to do"
+assert_no_file /boot/firmware/teslausb-headless-setup.log "and writes no log"
+
+start_case "the config the user edited on the boot partition is applied"
+prescript_env
+stage_repo_tar
+write_image_conf "export SSID='Chateau Cathcart'
+export WIFIPASS=animalcrackers
+export TESLAUSB_TIMEZONE=America/Los_Angeles
+export OS_PASSWORD=notthedefault"
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0"
+assert_grep "found /boot/firmware/teslausb_setup_variables.conf" /tmp/pre.log "finds it on the boot partition"
+assert_grep "applied the settings" /tmp/pre.log "and applies them"
+assert_grep "^AUTO_SETUP_NET_WIFI_ENABLED=1$" /boot/dietpi.txt "wifi is switched on for DietPi's own setup"
+assert_grep "Chateau Cathcart" /boot/dietpi-wifi.txt "the SSID reaches the file DietPi reads"
+assert_grep "animalcrackers" /boot/dietpi-wifi.txt "so does the passphrase"
+assert_grep "^AUTO_SETUP_NET_HOSTNAME=teslausb-image$" /boot/dietpi.txt "the hostname is applied"
+assert_grep "^AUTO_SETUP_TIMEZONE=America/Los_Angeles$" /boot/dietpi.txt "the timezone is applied"
+assert_grep "^AUTO_SETUP_GLOBAL_PASSWORD=notthedefault$" /boot/dietpi.txt "and the password, so the device is not on the network with DietPi's default"
+assert_equals "600" "$(stat -c %a /boot/dietpi-wifi.txt)" "the credentials are not world readable"
+assert_grep "wifi credentials are in place" /tmp/pre.log "and it confirms wifi is ready"
+assert_grep "wifi credentials are in place" /boot/firmware/teslausb-headless-setup.log \
+  "logging to the boot partition, which is readable from a card reader"
+
+start_case "a config with no wifi is called out rather than passed over"
+prescript_env
+stage_repo_tar
+write_image_conf "export ARCHIVE_SYSTEM=rsync"
+run_prescript
+assert_equals "0" "$PRE_RC" "still exits 0, since the boot has to finish"
+assert_grep "no wifi credentials were written" /tmp/pre.log "warns that there are none"
+assert_grep "cannot be reached" /tmp/pre.log "and says what that means for a car device"
+
+start_case "the whole source tree is needed, not just the one script"
+# prepare-boot-partition.sh installs files from the repository it finds beside itself, so
+# a lone copy in a staging directory would look for the bootstrap in DietPi's /boot/dietpi
+# and fail. Staging the tree is what makes it work, and is also what pins the version.
+prescript_env
+mkdir -p /boot/teslausb-local
+tar -C "$REPO" -cf /boot/teslausb-local/repo.tar tools/prepare-boot-partition.sh 2> /dev/null
+write_image_conf "export SSID=net
+export WIFIPASS=longenough1"
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0"
+assert_grep "no prepare-boot-partition.sh in the image" /tmp/pre.log \
+  "a tree without the bootstrap in it is refused"
+
+start_case "an image with nothing staged says so and boots anyway"
+prescript_env
+write_image_conf "export SSID=net
+export WIFIPASS=longenough1"
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0"
+assert_grep "wifi cannot be set up here" /tmp/pre.log "explains what it could not do"
+assert_grep "whatever it was flashed with" /tmp/pre.log "and what will happen instead"
+
+start_case "a corrupt archive is not fatal either"
+prescript_env
+mkdir -p /boot/teslausb-local
+head -c 512 /dev/urandom > /boot/teslausb-local/repo.tar
+write_image_conf "export SSID=net
+export WIFIPASS=longenough1"
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0"
+assert_grep "no prepare-boot-partition.sh in the image" /tmp/pre.log "reports it"
+
+start_case "a config that cannot be applied is reported, and the boot continues"
+prescript_env
+stage_repo_tar
+printf 'export SSID=net\nthis is not shell(\n' > /boot/firmware/teslausb_setup_variables.conf
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0 rather than stopping DietPi's first run"
+assert_grep "could not apply" /tmp/pre.log "says it could not be applied"
+assert_grep "continuing the boot regardless" /tmp/pre.log "and that it is carrying on"
+
+start_case "a config on the root filesystem's own /boot is found too"
+# Single partition images, such as the VM one, have no separate FAT partition.
+prescript_env
+stage_repo_tar
+rm -rf /boot/firmware
+cat > /boot/teslausb_setup_variables.conf << 'CONF'
+export SSID=net
+export WIFIPASS=longenough1
+CONF
+run_prescript
+assert_equals "0" "$PRE_RC" "exits 0"
+assert_grep "found /boot/teslausb_setup_variables.conf" /tmp/pre.log "looks there as well"
+rm -f /boot/teslausb_setup_variables.conf
+
+# leave /boot as DietPi had it
+prescript_env
+rm -rf /boot/teslausb-local /boot/firmware /tmp/pre
+
 banner "sentry-keeper"
 # ===========================================================================
 # Holds Sentry Mode on for the archive window, because Sentry is what keeps the

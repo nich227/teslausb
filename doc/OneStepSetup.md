@@ -12,6 +12,22 @@ a phone in the car, set `AP_SSID` and `AP_PASS` (at least eight characters) in y
 config, and optionally `AP_IP`, which defaults to `192.168.66.1`. It runs alongside
 your normal wifi connection rather than replacing it. The [wiki](https://github.com/nich227/teslausb/wiki) has the detail.
 
+## Flashable image, or an official DietPi image
+
+There are two ways to start, and they end up in the same place.
+
+The quickest is the flashable image attached to a [release](https://github.com/nich227/teslausb/releases): flash it, edit `teslausb_setup_variables.conf` on the partition that appears in your file manager, and boot it. That partition is the one Windows and macOS both mount, so this needs no Linux machine and no tooling. The image already has a 4 GB root filesystem, the teslausb bootstrap, and the source of the release it belongs to, so the device installs the version on the tin rather than whatever the branch happens to be today. It reads your config before DietPi configures the network, using DietPi's own `Automation_Custom_PreScript.sh` hook, which is how the wifi you typed into that one file is up in time for the rest of the first boot.
+
+The other way is to flash an official DietPi image and run `tools/prepare-boot-partition.sh` against the card, described below. It needs a Linux machine, and it is what you want if you would rather see exactly what is written where, or you are building from a branch.
+
+To build an image yourself:
+
+```
+tools/build-image.sh RPi234-ARMv8 Bookworm
+```
+
+The board is any DietPi image name (`RPi234-ARMv8` covers the Pi Zero 2 W and the Pi 2, 3 and 4; `RPi5-ARMv8` the Pi 5; `RPi1-ARMv6` the original Zero and Zero W) and the distro is `Bookworm` or `Trixie`. It needs `mtools`, `e2fsprogs`, `xz-utils` and `curl`, verifies DietPi's published checksum, and does not need root: the root filesystem is written with `debugfs` and the boot partition with `mtools`, so it cannot touch anything of yours by accident.
+
 ## Notes
 
 - Assumes your Pi has access to Wifi, with internet access (during setup). (But all setup methods do currently.) USB networking is still enabled for troubleshooting or manual setup

@@ -10,6 +10,8 @@ shellcheck --exclude=SC1091 \
            ./setup/pi/setup-teslausb \
            ./setup/pi/first-boot.sh \
            ./dietpi/Automation_Custom_Script.sh \
+           ./dietpi/Automation_Custom_PreScript.sh \
+           ./tools/build-image.sh \
            ./run/archiveloop \
            ./run/auto.teslausb \
            ./run/awake_start \

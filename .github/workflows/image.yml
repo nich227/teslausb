@@ -1,0 +1,106 @@
+name: image
+
+# Builds the flashable images and, when run against a tag, attaches them to that release.
+#
+# The build needs no privileges: tools/build-image.sh writes the root filesystem with
+# debugfs and the boot partition with mtools, so there is no loop device and no mounting,
+# which is also why this runs on a plain runner with no special permissions.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: 'Space separated DietPi image names'
+        default: 'RPi234-ARMv8 RPi5-ARMv8'
+        required: false
+      release_tag:
+        description: 'Attach the images to this existing tag (leave empty to only upload artifacts)'
+        default: ''
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [Bookworm, Trixie]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build-image.sh stages the source with git archive, so it needs the history
+          fetch-depth: 0
+
+      - name: Install the build tools
+        run: |
+          sudo apt-get -q update
+          sudo apt-get -q install -y --no-install-recommends mtools e2fsprogs xz-utils curl fdisk
+
+      - name: Cache the DietPi images
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/teslausb-images
+          key: dietpi-images-${{ matrix.distro }}-${{ github.run_id }}
+          restore-keys: dietpi-images-${{ matrix.distro }}-
+
+      - name: Build
+        env:
+          DIETPI_CACHE_DIR: ~/.cache/teslausb-images
+        run: |
+          boards="${{ github.event.inputs.boards }}"
+          [ -n "$boards" ] || boards='RPi234-ARMv8 RPi5-ARMv8'
+          mkdir -p out
+          for board in $boards
+          do
+            ./tools/build-image.sh "$board" "${{ matrix.distro }}" \
+              "out/teslausb-${board}-${{ matrix.distro }}.img.xz"
+          done
+          ( cd out && sha256sum *.img.xz > "SHA256SUMS-${{ matrix.distro }}.txt" )
+          ls -la out
+
+      - name: Check the images contain what they should
+        run: |
+          # A flashable image that boots to nothing is worse than no image, so confirm the
+          # pieces the first boot depends on are actually in there before publishing it.
+          for image in out/*.img.xz
+          do
+            echo "== $image"
+            xz -dc "$image" > /tmp/disk.img
+            start=$(sfdisk -d /tmp/disk.img | sed -n 's|.*[^0-9]2 : start=[[:blank:]]*\([0-9]*\).*|\1|p' | head -1)
+            dd if=/tmp/disk.img of=/tmp/root.img bs=512 skip="$start" status=none
+            for f in boot/Automation_Custom_Script.sh boot/Automation_Custom_PreScript.sh \
+                     boot/teslausb-local/repo.tar boot/dietpi.txt \
+                     etc/systemd/system/getty@tty1.service.d/teslausb-autologin.conf \
+                     dietpi_skip_partition_resize
+            do
+              debugfs -R "stat $f" /tmp/root.img 2> /dev/null | grep -q '^Inode:' ||
+                { echo "MISSING $f"; exit 1; }
+              echo "  ok: $f"
+            done
+            debugfs -R 'cat boot/dietpi.txt' /tmp/root.img 2> /dev/null |
+              grep -q '^AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1' ||
+              { echo "the bootstrap would not run"; exit 1; }
+            echo "  ok: the bootstrap is enabled"
+            rm -f /tmp/disk.img /tmp/root.img
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teslausb-images-${{ matrix.distro }}
+          path: out/*
+          retention-days: 14
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.release_tag }}"
+          [ -n "$tag" ] || tag="${GITHUB_REF#refs/tags/}"
+          gh release upload "$tag" out/* --clobber -R "$GITHUB_REPOSITORY"
