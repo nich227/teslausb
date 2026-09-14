@@ -7,8 +7,10 @@ teslausb runs on [DietPi](https://dietpi.com/). Raspberry Pi OS is not supported
 Two things worth knowing before you start: there is no `pi` user on DietPi, so you
 log in as `root` or `dietpi`, and teslausb replaces DietPi's dropbear with OpenSSH
 during setup, because its rsync archive backend needs an ssh client. If you want the
-device to serve its own wifi network as well, see
-[access point setup](./SetupAccessPoint.md).
+device to serve its own wifi network as well, so you can reach the web interface from
+a phone in the car, set `AP_SSID` and `AP_PASS` (at least eight characters) in your
+config, and optionally `AP_IP`, which defaults to `192.168.66.1`. It runs alongside
+your normal wifi connection rather than replacing it. The [wiki](https://github.com/nich227/teslausb/wiki) has the detail.
 
 ## Notes
 

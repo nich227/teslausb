@@ -45,14 +45,16 @@ Flash an official [DietPi image](https://dietpi.com/#download) for your board, t
 
 - **There is no `pi` user.** Log in as `root` or `dietpi`, with the password you set as `OS_PASSWORD`.
 - **SSH is OpenSSH.** DietPi ships dropbear, which teslausb replaces: the rsync archive backend runs rsync over ssh, and dropbear provides no `ssh` client at all.
-- **The access point runs on hostapd**, alongside the normal wifi connection rather than instead of it. See [access point setup](doc/SetupAccessPoint.md).
+- **The access point runs on hostapd**, alongside the normal wifi connection rather than instead of it, and needs no NetworkManager.
 - **Wifi is required, not optional.** The device lives in a car with no ethernet, so DietPi cannot finish its own first boot without working credentials.
 
 ## Testing
 
-teslausb has unit tests, an integration suite that runs against a real DietPi
-container, and a two-VM lab that installs a device from scratch and archives a clip
-to a NAS. See [doc/Testing.md](doc/Testing.md).
+`./tests/run-integration-tests.sh` runs shellcheck, the unit tests, and an
+integration suite inside a real DietPi container, with a line coverage gate.
+`./tests/vm/lab.sh` goes further: it installs a device from scratch in a VM and
+archives a clip to a second VM acting as a NAS, in about six minutes. Both run on a
+normal Linux machine with Docker and QEMU. See the [wiki](https://github.com/nich227/teslausb/wiki) for the detail.
 
 ## Contributing
 

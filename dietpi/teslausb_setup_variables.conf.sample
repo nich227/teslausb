@@ -159,7 +159,6 @@ export CAM_SIZE=40G
 # Uncomment to enable teslausb to act as a wifi access point with the given
 # SSID, so you can access it while on the road. This should work on Raspberry Pi
 # but may not work on other devices.
-# See doc/SetupAccessPoint.md for how the access point works.
 #export AP_SSID='TESLAUSB WIFI'
 # Change this! The setup script will not accept the default 'password'
 # Also note that the wifi password must be at least 8 characters.
