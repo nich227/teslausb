@@ -39,7 +39,9 @@ Optional:
 
 ## Installing
 
-Flash an official [DietPi image](https://dietpi.com/#download) for your board, then follow the [one step setup instructions](doc/OneStepSetup.md). There is no teslausb image to download: everything is configured from a single file on the boot partition before the first boot, and the device installs itself. For SBC-specific hardware notes, the [upstream wiki](https://github.com/marcone/teslausb/wiki/Installation) still applies.
+Flash a [release image](https://github.com/nich227/teslausb/releases), edit `teslausb_setup_variables.conf` on the partition that appears in your file manager, and boot it. That partition is the one Windows and macOS both mount, so this needs no Linux machine. There is an image per Debian release, Bookworm and Trixie.
+
+The alternative is to flash an official [DietPi image](https://dietpi.com/#download) and run `tools/prepare-boot-partition.sh` against the card, which needs a Linux machine and is what you want if you are building from a branch. Either way the device installs itself on first boot with no keyboard and no screen, and either way the [one step setup instructions](doc/OneStepSetup.md) are the place to start. For SBC-specific hardware notes, the [upstream wiki](https://github.com/marcone/teslausb/wiki/Installation) still applies.
 
 ### What differs from the Raspberry Pi OS builds
 
@@ -47,6 +49,7 @@ Flash an official [DietPi image](https://dietpi.com/#download) for your board, t
 - **SSH is OpenSSH.** DietPi ships dropbear, which teslausb replaces: the rsync archive backend runs rsync over ssh, and dropbear provides no `ssh` client at all.
 - **The access point runs on hostapd**, alongside the normal wifi connection rather than instead of it, and needs no NetworkManager.
 - **Wifi is required, not optional.** The device lives in a car with no ethernet, so DietPi cannot finish its own first boot without working credentials.
+- **The console often shows boot output rather than a prompt.** The shell is running and will do whatever you type; the first keypress draws the prompt. A console that looks dead this way is not.
 
 ## Testing
 
@@ -54,7 +57,10 @@ Flash an official [DietPi image](https://dietpi.com/#download) for your board, t
 integration suite inside a real DietPi container, with a line coverage gate.
 `./tests/vm/lab.sh` goes further: it installs a device from scratch in a VM and
 archives a clip to a second VM acting as a NAS, in about six minutes. Both run on a
-normal Linux machine with Docker and QEMU. See the [wiki](https://github.com/nich227/teslausb/wiki) for the detail.
+normal Linux machine with Docker and QEMU. See the [wiki](https://github.com/nich227/teslausb/wiki/Testing) for the detail.
+
+`tools/build-image.sh <board> <Bookworm|Trixie>` builds a flashable image for any DietPi
+board without needing root.
 
 ## Contributing
 

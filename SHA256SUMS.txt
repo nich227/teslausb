@@ -1,0 +1,2 @@
+da3c29d50319b4711adcfbb15509812c7183e87e706abfdf8da3a3d9d54275b6  teslausb-RPi234-ARMv8-Bookworm.img.xz
+03cbe45be363a7922907a3049f4a8fe018dc8c557f8eec34376cc14cae60e769  teslausb-RPi234-ARMv8-Trixie.img.xz
