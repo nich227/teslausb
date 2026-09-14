@@ -238,6 +238,41 @@ echo "Done. $BOOT is ready:"
 echo "  - eject the card and boot the device"
 echo "  - DietPi does its own first-boot setup unattended, then starts teslausb setup"
 echo "  - progress is logged to teslausb-headless-setup.log on this partition"
+# ---------------------------------------------------------------------------
+# Start the first run without a keyboard.
+#
+# DietPi's first run is triggered by a login shell: /etc/bashrc.d/dietpi.bash hands
+# over to dietpi-login. With no keyboard attached nothing ever logs in, so the
+# device waits at "press Enter to login" forever, which means no first run,
+# therefore no wifi, therefore no ssh, therefore no way to log in. DietPi's own
+# autologin setting cannot break that circle: as its dietpi.txt says, it "will be
+# effective on 2nd boot, after first run update and installs have been done".
+#
+# A plain systemd drop-in does work on the first boot. It is also deliberately not
+# named dietpi-autologin.conf, because DietPi deletes that file when a first run
+# fails and falls back to an interactive retry, which is exactly when a device in a
+# car still needs to be able to log itself in.
+# ---------------------------------------------------------------------------
+rootfs_root="$(dirname "$TARGET")"
+if [ -d "$rootfs_root/etc/systemd/system" ]
+then
+  log "setting up console autologin so the first run starts without a keyboard"
+  mkdir -p "$rootfs_root/etc/systemd/system/getty@tty1.service.d"
+  cat > "$rootfs_root/etc/systemd/system/getty@tty1.service.d/teslausb-autologin.conf" <<'EOF'
+# Written by teslausb setup.
+#
+# DietPi's first run only starts once something logs in, and a device in a car has
+# no keyboard. Without this it waits at the login prompt forever, never brings up
+# wifi, and can never be reached.
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+EOF
+else
+  log "WARNING: could not reach the root filesystem, so console autologin is not set up."
+  log "WARNING: without a keyboard, DietPi's first run may never start."
+fi
+
 echo
 echo "Log in as 'root' or 'dietpi' (DietPi has no 'pi' user), with the password"
 echo "from AUTO_SETUP_GLOBAL_PASSWORD in dietpi.txt."
