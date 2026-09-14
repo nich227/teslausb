@@ -8,21 +8,20 @@ setup_progress "configuring nginx"
 # /var/lib/nginx gets a tmpfs mount: /var/lib is on the root filesystem, so the
 # mount point itself persists across reboots.
 #
-# /var/log/nginx does not. On DietPi /var/log is already a tmpfs, so anything
-# inside it is gone on the next boot, including a mount point. An fstab entry for
-# it therefore fails at every boot, local-fs.target fails with it, and the device
-# drops into emergency mode: no network, no ssh, and with no keyboard attached, no
-# way in at all. Since /var/log is already a tmpfs, a plain directory in it is
-# just as good as a mount, and systemd-tmpfiles recreates it on every boot.
+# /var/log/nginx is the awkward one. When this runs, DietPi's RAMlog still has a
+# tmpfs on /var/log, so a directory created here lives in RAM. Later,
+# make-root-fs-readonly.sh removes RAMlog and the real, empty /var/log appears,
+# taking the mount point with it. The fstab entry then has nowhere to mount, which
+# fails local-fs.target and drops the device into emergency mode on the next boot:
+# no network, no ssh, and with no keyboard, no way in. So the mount point is created
+# again after RAMlog goes, in make-root-fs-readonly.sh, and both entries carry
+# nofail so that a missing mount point can never do that again.
 sed -i "/.*\/nginx tmpfs.*/d" /etc/fstab
-echo "tmpfs /var/lib/nginx tmpfs nodev,nosuid 0 0" >> /etc/fstab
-cat > /etc/tmpfiles.d/teslausb-nginx.conf <<'EOF'
-# Written by teslausb setup. /var/log is a tmpfs, so this has to be recreated on
-# every boot rather than mounted from fstab.
-d /var/log/nginx 0755 root adm -
-EOF
+echo "tmpfs /var/log/nginx tmpfs nodev,nosuid,nofail 0 0" >> /etc/fstab
+echo "tmpfs /var/lib/nginx tmpfs nodev,nosuid,nofail 0 0" >> /etc/fstab
 mkdir -p /var/log/nginx
 mkdir -p /var/lib/nginx
+mount /var/log/nginx
 mount /var/lib/nginx
 
 apt-get -y install nginx fcgiwrap libnginx-mod-http-fancyindex fuse libfuse-dev g++ net-tools wireless-tools ethtool

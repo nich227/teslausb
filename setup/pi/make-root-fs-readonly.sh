@@ -62,6 +62,19 @@ function dietpi_software () {
   timeout "${DIETPI_SOFTWARE_TIMEOUT:-600}" /boot/dietpi/dietpi-software "$@" < /dev/null
 }
 
+# Anything that lived in /var/log while DietPi's RAMlog was mounted has just gone
+# with it, including the mount point configure-web.sh made for nginx's log tmpfs.
+# Recreate it on the real /var/log, while the root filesystem is still writable,
+# otherwise that mount fails on the next boot and takes local-fs.target with it.
+function restore_nginx_log_mountpoint () {
+  grep -q "/var/log/nginx" /etc/fstab || return 0
+  [ -d /var/log/nginx ] && return 0
+  log_progress "recreating /var/log/nginx, which went with DietPi-RAMlog"
+  mkdir -p /var/log/nginx
+  chown root:adm /var/log/nginx
+  chmod 755 /var/log/nginx
+}
+
 function remove_dietpi_ramlog () {
   if ! grep -q '[[:blank:]]/var/log[[:blank:]]' /etc/fstab 2> /dev/null &&
      ! findmnt -t tmpfs /var/log > /dev/null 2>&1
@@ -93,6 +106,7 @@ function remove_dietpi_ramlog () {
 }
 
 remove_dietpi_ramlog
+restore_nginx_log_mountpoint
 
 # adb service exists on some distributions and interferes with mass storage emulation
 systemctl disable amlogic-adbd &> /dev/null || true
