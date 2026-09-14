@@ -1687,6 +1687,282 @@ assert_grep "ERROR" /mutable/usb-link-watchdog.log "logged the error"
 echo camdata > /backingfiles/cam_disk.bin
 
 # ===========================================================================
+banner "nothing in fstab can strand the device in emergency mode"
+# ===========================================================================
+# A failed mount fails local-fs.target, and a device in a glovebox with no keyboard
+# is then unreachable. Two entries did exactly that: a tmpfs for /var/log/nginx whose
+# mount point disappeared with DietPi-RAMlog, and a swap entry pointing at a file
+# that had been deleted.
+
+start_case "nginx's mounts cannot fail the boot"
+assert_grep "tmpfs /var/log/nginx tmpfs nodev,nosuid,nofail" "$REPO/setup/pi/configure-web.sh" \
+  "the log tmpfs carries nofail"
+assert_grep "tmpfs /var/lib/nginx tmpfs nodev,nosuid,nofail" "$REPO/setup/pi/configure-web.sh" \
+  "so does the cache tmpfs"
+
+start_case "the log mount point is recreated once DietPi-RAMlog is gone"
+# configure-web.sh makes /var/log/nginx while RAMlog still has a tmpfs on /var/log, so
+# the directory goes when RAMlog does. It has to be made again while the root
+# filesystem is still writable.
+nginx_fn=$(sed -n '/^function restore_nginx_log_mountpoint/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh")
+run_restore () {
+  : > /tmp/restore.progress
+  rm -rf /tmp/varlog && mkdir -p /tmp/varlog
+  ( # shellcheck disable=SC2329
+    log_progress () { echo "$*" >> /tmp/restore.progress; }
+    eval "${nginx_fn//\/var\/log\/nginx//tmp/varlog/nginx}"
+    restore_nginx_log_mountpoint
+  ) && RESTORE_RC=0 || RESTORE_RC=$?
+}
+# the path is rewritten in the extracted function, so fstab has to match it
+printf 'tmpfs /tmp/varlog/nginx tmpfs nodev,nosuid,nofail 0 0\n' > /tmp/fake_fstab
+cp /etc/fstab /tmp/fstab.real 2>/dev/null || true
+cp /tmp/fake_fstab /etc/fstab
+run_restore
+assert_eq "$RESTORE_RC" 0 "exits 0"
+assert_eq "$([ -d /tmp/varlog/nginx ] && echo yes)" yes "the mount point is created"
+assert_grep "recreating" /tmp/restore.progress "and says why"
+
+start_case "and it does nothing when there is nothing to do"
+run_restore
+mkdir -p /tmp/varlog/nginx
+: > /tmp/restore.progress
+( # shellcheck disable=SC2329
+  log_progress () { echo "$*" >> /tmp/restore.progress; }
+  eval "${nginx_fn//\/var\/log\/nginx//tmp/varlog/nginx}"
+  restore_nginx_log_mountpoint
+) > /dev/null 2>&1
+assert_eq "$(grep -c . /tmp/restore.progress || true)" 0 "silent when the directory already exists"
+printf 'tmpfs /tmp tmpfs defaults 0 0\n' > /etc/fstab
+run_restore
+assert_eq "$([ -d /tmp/varlog/nginx ] && echo yes || echo no)" no \
+  "and creates nothing when fstab has no such mount"
+[ -f /tmp/fstab.real ] && cp /tmp/fstab.real /etc/fstab
+
+start_case "the swap entry goes with the swap file"
+# Deleting /var/swap while DietPi's fstab still points at it fails local-fs.target.
+assert_grep "swapoff /var/swap" "$REPO/setup/pi/make-root-fs-readonly.sh" "swap is turned off"
+assert_grep "sed -i .*var/swap.*/etc/fstab\|/var/swap\[\[:blank:\]\]" \
+  "$REPO/setup/pi/make-root-fs-readonly.sh" "the fstab entry is removed"
+assert_grep "dietpi-set_swapfile 0" "$REPO/setup/pi/make-root-fs-readonly.sh" \
+  "and DietPi's own tool is used where available, so its records stay straight"
+assert_grep "rm -f /var/swap" "$REPO/setup/pi/make-root-fs-readonly.sh" "before the file is deleted"
+
+# ===========================================================================
+banner "preparing a card: where each file goes"
+# ===========================================================================
+# On the Raspberry Pi images the partition a PC can see is not the one DietPi reads.
+# DietPi reads /boot, which is on the root filesystem there, while teslausb reads its
+# own config from /teslausb, which first-boot.sh points at /boot/firmware when such a
+# partition exists. Getting this wrong produced a device that booted into an
+# interactive DietPi with no network, and then one that could not find its config.
+
+start_case "a single-partition image keeps everything in the one place"
+fake_boot_partition
+printf 'export SSID=net\nexport WIFIPASS=secret123\nexport TESLAUSB_HOSTNAME=teslausb\n' > /tmp/single.conf
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_eq "$PREPARE_RC" 0 "exits 0"
+assert_file /tmp/bootfs/teslausb_setup_variables.conf "teslausb's config is here"
+assert_file /tmp/bootfs/Automation_Custom_Script.sh "DietPi's hook is here too"
+assert_grep "^AUTO_SETUP_AUTOMATED=1$" /tmp/bootfs/dietpi.txt "dietpi.txt is updated in place"
+assert_grep "aWIFI_SSID\[0\]='net'" /tmp/bootfs/dietpi-wifi.txt "and the wifi file written"
+
+start_case "a firmware partition sends it looking for the root filesystem"
+# The give-away is DietPi's own scripts: present means this is the real /boot, absent
+# means it is the FAT partition and the config belongs on the root filesystem.
+rm -rf /tmp/fwonly && mkdir -p /tmp/fwonly
+cp /tmp/bootfs/dietpi.txt /tmp/fwonly/dietpi.txt
+printf 'root=PARTUUID=deadbeef-02\n' > /tmp/fwonly/cmdline.txt
+run_prepare /tmp/fwonly /tmp/single.conf
+assert_eq "$PREPARE_RC" 1 "refuses rather than writing to the wrong partition"
+assert_grep "firmware partition\|root filesystem" /tmp/prepare.log \
+  "and says it needs the root filesystem"
+
+start_case "the two-partition layout that broke on hardware"
+# The Raspberry Pi arrangement: a FAT firmware partition a PC can see, and DietPi's
+# real /boot on the root filesystem beside it. The container has no loop devices, so
+# the card is fabricated: a block device node for the root partition, findmnt made to
+# report it, and mount stubbed to hand over a prepared tree. That still drives the
+# real decision, which is the thing that broke.
+rm -rf /tmp/fwmnt /tmp/fakeroot /tmp/mounted
+mkdir -p /tmp/fwmnt /tmp/fakeroot/boot/dietpi /tmp/fakeroot/etc/systemd/system
+cp /tmp/bootfs/dietpi.txt /tmp/fwmnt/dietpi.txt          # firmware partition: no dietpi/ dir
+printf 'root=PARTUUID=deadbeef-02\n' > /tmp/fwmnt/cmdline.txt
+cp /tmp/bootfs/dietpi.txt /tmp/fakeroot/boot/dietpi.txt  # the real /boot, with DietPi's scripts
+
+rm -f /dev/teslausb-test-p2
+mknod /dev/teslausb-test-p2 b 7 200 2> /dev/null || true
+
+cat > "$STUBS/findmnt" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"--target"*)  echo /dev/teslausb-test-p1 ;;   # which device the given path is on
+  *"-no TARGET"*) exit 1 ;;                      # the root partition is not mounted yet
+  *) exit 1 ;;
+esac
+EOF
+cat > "$STUBS/mount" <<'EOF'
+#!/bin/bash
+# stands in for mounting the root partition: hand over the prepared tree.
+# mount is called as: mount <device> <dir>
+target="$2"
+cp -r /tmp/fakeroot/. "$target/"
+echo "mount $*" >> /tmp/mount.calls
+exit 0
+EOF
+printf '#!/bin/bash
+echo "umount $*" >> /tmp/mount.calls
+exit 0
+' > "$STUBS/umount"
+chmod +x "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount"
+rm -f /tmp/mount.calls
+# the device the script will derive is p1 -> p2, which is the node made above
+ln -sf /dev/teslausb-test-p2 /dev/teslausb-test-p1 2> /dev/null || true
+
+run_prepare /tmp/fwmnt /tmp/single.conf
+rm -f "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount"
+
+if [ "$PREPARE_RC" != 0 ]
+then
+  printf '   what it said: %s\n' "$(tail -3 /tmp/prepare.log | tr '\n' ' ' | cut -c1-160)"
+fi
+assert_eq "$PREPARE_RC" 0 "exits 0"
+assert_grep "firmware partition" /tmp/prepare.log "recognises that this is not DietPi's own /boot"
+assert_grep "mounted /dev/teslausb-test-p2" /tmp/prepare.log "derives the root partition beside it and mounts it"
+assert_grep "mount /dev/teslausb-test-p2" /tmp/mount.calls "with a real mount call"
+assert_grep "umount" /tmp/mount.calls "and unmounts it again on the way out"
+assert_file /tmp/fwmnt/teslausb_setup_variables.conf \
+  "teslausb's config stays on the partition /teslausb will point at"
+assert_no_file /tmp/fwmnt/Automation_Custom_Script.sh \
+  "DietPi's hook does not stay on the firmware partition, where DietPi never looks"
+
+start_case "the root partition is derived from either device naming scheme"
+# /dev/mmcblk0p1 -> p2 on a card reader, /dev/sdb1 -> sdb2 on a USB adapter.
+prep_fw_case () {
+  # $1: the device findmnt should report, $2: what "findmnt -no TARGET" should do
+  rm -rf /tmp/fwmnt /tmp/fakeroot
+  mkdir -p /tmp/fwmnt /tmp/fakeroot/boot/dietpi /tmp/fakeroot/etc/systemd/system
+  cp /tmp/bootfs/dietpi.txt /tmp/fwmnt/dietpi.txt
+  cp /tmp/bootfs/dietpi.txt /tmp/fakeroot/boot/dietpi.txt
+  cat > "$STUBS/findmnt" <<EOF
+#!/bin/bash
+case "\$*" in
+  *"--target"*)   echo "$1" ;;
+  *"-no TARGET"*) $2 ;;
+  *) exit 1 ;;
+esac
+EOF
+  cat > "$STUBS/mount" <<'EOF'
+#!/bin/bash
+[ "${MOUNT_FAILS:-0}" = 1 ] && exit 1
+cp -r /tmp/fakeroot/. "$2/"
+echo "mount $*" >> /tmp/mount.calls
+exit 0
+EOF
+  printf '#!/bin/bash\nexit 0\n' > "$STUBS/umount"
+  chmod +x "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount"
+  rm -f /tmp/mount.calls
+}
+clear_fw_stubs () { rm -f "$STUBS/findmnt" "$STUBS/mount" "$STUBS/umount" "$STUBS/df"; }
+
+rm -f /dev/mmcblk9p2 /dev/sdz2
+mknod /dev/mmcblk9p2 b 7 201 2> /dev/null || true
+mknod /dev/sdz2 b 7 202 2> /dev/null || true
+
+prep_fw_case /dev/mmcblk9p1 "exit 1"
+run_prepare /tmp/fwmnt /tmp/single.conf
+clear_fw_stubs
+assert_eq "$PREPARE_RC" 0 "a card reader device, mmcblk9p1, works"
+assert_grep "mounted /dev/mmcblk9p2" /tmp/prepare.log "and p1 becomes p2"
+
+prep_fw_case /dev/sdz1 "exit 1"
+run_prepare /tmp/fwmnt /tmp/single.conf
+clear_fw_stubs
+assert_eq "$PREPARE_RC" 0 "a USB adapter device, sdz1, works too"
+assert_grep "mounted /dev/sdz2" /tmp/prepare.log "and sdz1 becomes sdz2"
+
+start_case "a root filesystem that is already mounted is used as it is"
+prep_fw_case /dev/mmcblk9p1 "echo /tmp/alreadymounted"
+rm -rf /tmp/alreadymounted && mkdir -p /tmp/alreadymounted/boot/dietpi
+cp /tmp/bootfs/dietpi.txt /tmp/alreadymounted/boot/dietpi.txt
+run_prepare /tmp/fwmnt /tmp/single.conf
+clear_fw_stubs
+assert_eq "$PREPARE_RC" 0 "exits 0"
+assert_grep "already mounted at /tmp/alreadymounted" /tmp/prepare.log "says it is reusing the mount"
+assert_grep "^AUTO_SETUP_AUTOMATED=1$" /tmp/alreadymounted/boot/dietpi.txt "and writes there"
+assert_no_file /tmp/mount.calls "without mounting anything itself"
+
+start_case "a root filesystem that will not mount is a clear refusal"
+prep_fw_case /dev/mmcblk9p1 "exit 1"
+MOUNT_FAILS=1 run_prepare /tmp/fwmnt /tmp/single.conf
+clear_fw_stubs
+assert_eq "$PREPARE_RC" 1 "exits 1"
+assert_grep "could not mount" /tmp/prepare.log "and says so"
+assert_grep "needs root, and a Linux machine" /tmp/prepare.log "explaining why it might have failed"
+
+start_case "a root filesystem too small for DietPi's own upgrade is called out"
+prep_fw_case /dev/mmcblk9p1 "exit 1"
+printf '#!/bin/bash\necho 1048576\n' > "$STUBS/df"   # 1GB, as the images ship
+chmod +x "$STUBS/df"
+run_prepare /tmp/fwmnt /tmp/single.conf
+clear_fw_stubs
+assert_eq "$PREPARE_RC" 0 "still finishes, since it is advice not a refusal"
+assert_grep "root filesystem is only 1024MB" /tmp/prepare.log "reports the actual size"
+assert_grep "resize2fs" /tmp/prepare.log "and gives the commands to grow it"
+
+start_case "the console logs itself in, since a car has no keyboard"
+# DietPi's first run only starts when something logs in, and its own autologin
+# setting is documented as taking effect only from the second boot.
+fake_boot_partition
+mkdir -p /tmp/bootfs/../etc/systemd/system 2>/dev/null || true
+run_prepare /tmp/bootfs /tmp/single.conf
+autologin=$(dirname /tmp/bootfs)/etc/systemd/system/getty@tty1.service.d/teslausb-autologin.conf
+if [ -f "$autologin" ]
+then
+  ok "an autologin drop-in is written"
+  assert_grep "agetty --autologin root" "$autologin" "logging in as root on tty1"
+  assert_eq "$(grep -c "^ExecStart=$" "$autologin")" 1 "clearing the inherited ExecStart first"
+  case "$autologin" in
+    *teslausb-autologin.conf) ok "named so DietPi's own failure handling does not delete it" ;;
+    *) not_ok "the name would collide with DietPi's own drop-in" ;;
+  esac
+else
+  not_ok "no autologin drop-in was written to $autologin"
+fi
+
+start_case "DietPi is stopped from expanding the root over teslausb's space"
+marker=$(dirname /tmp/bootfs)/dietpi_skip_partition_resize
+assert_file "$marker" "DietPi's own skip-resize marker is created"
+printf 'mine\n' > "$marker"
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_eq "$(cat "$marker")" mine "an existing marker is left alone"
+
+start_case "a root filesystem too small to survive DietPi's own upgrade is called out"
+assert_grep "root filesystem is only" "$REPO/tools/prepare-boot-partition.sh" \
+  "the script warns about a small root filesystem"
+assert_grep "resize2fs" "$REPO/tools/prepare-boot-partition.sh" \
+  "and gives the command to grow it"
+
+start_case "the timezone is set when asked for, and left alone when not"
+fake_boot_partition
+printf 'export SSID=net\nexport WIFIPASS=secret123\nexport TESLAUSB_TIMEZONE=America/Los_Angeles\n' > /tmp/tz.conf
+run_prepare /tmp/bootfs /tmp/tz.conf
+assert_grep "^AUTO_SETUP_TIMEZONE=America/Los_Angeles$" /tmp/bootfs/dietpi.txt "honours TESLAUSB_TIMEZONE"
+fake_boot_partition
+run_prepare /tmp/bootfs /tmp/single.conf
+assert_eq "$(grep -c "^AUTO_SETUP_TIMEZONE=" /tmp/bootfs/dietpi.txt || true)" 0 \
+  "writes nothing when the config does not ask"
+
+start_case "anything staged beside the config is carried onto the card"
+fake_boot_partition
+rm -rf /tmp/withchime && mkdir -p /tmp/withchime/teslausb-cam-root
+cp /tmp/single.conf /tmp/withchime/teslausb_setup_variables.conf
+printf 'RIFFfake' > /tmp/withchime/teslausb-cam-root/LockChime.wav
+run_prepare /tmp/bootfs /tmp/withchime/teslausb_setup_variables.conf
+assert_file /tmp/bootfs/teslausb-cam-root/LockChime.wav "the lock chime is staged for the cam drive"
+assert_eq "$(cat /tmp/bootfs/teslausb-cam-root/LockChime.wav)" RIFFfake "intact"
+
+# ===========================================================================
 banner "files staged for the root of the cam drive"
 # ===========================================================================
 # Tesla reads LockChime.wav from the root of the drive for its custom lock sound,

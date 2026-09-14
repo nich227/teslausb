@@ -80,4 +80,5 @@ docker run --rm --name "$container" \
   --security-opt apparmor=unconfined \
   -e "COVERAGE=${COVERAGE:-1}" \
   -e "COVERAGE_MIN=${COVERAGE_MIN:-100}" \
+  -e "SHOW_MISSED=${SHOW_MISSED:-}" \
   "$TEST_TAG"
