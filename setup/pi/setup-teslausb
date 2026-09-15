@@ -468,6 +468,71 @@ function configure_mdns_name () {
   setup_progress "the device answers to ${wanted}.local as well as its hostname"
 }
 
+# Publish only IPv4 for the .local name.
+#
+# avahi advertises every address the device has, IPv6 included, and clients that
+# prefer IPv6 will try those first. On this device that is a way to hang rather
+# than a way to connect:
+#
+#   - the IPv6 addresses are ULAs handed out by the home router, and a router
+#     reboot or reconfiguration regenerates the prefix. Seen in practice: the
+#     prefix changed from fd18:776a:bd5c:9790:: to fd73:5747:499d:18e1:: in the
+#     middle of a day, and a phone holding the old address for teslausb.local sat
+#     there until it timed out, reporting only that the site took too long to
+#     respond, while the same name worked immediately from a machine that had
+#     resolved it fresh.
+#
+#   - nothing here needs IPv6. The web interface is served on port 80 to the home
+#     network, and the archive backends address the NAS by IPv4.
+#
+# Two settings are needed, in different sections, and only the second one actually
+# does the job:
+#
+#   use-ipv6=no             [server]  stops avahi using IPv6 as a transport
+#   publish-aaaa-on-ipv4=no [publish] stops it publishing AAAA records at all
+#
+# use-ipv6=no alone looks like it is enough and is not: avahi keeps answering with
+# the AAAA record over IPv4, so a client still learns the IPv6 address and still
+# prefers it. That was verified on the device with `avahi-resolve -6 -n`, which kept
+# returning the IPv6 address until publish-aaaa-on-ipv4=no was set as well.
+function configure_mdns_ipv4_only () {
+  local conf=/etc/avahi/avahi-daemon.conf
+
+  if [ ! -f "$conf" ]
+  then
+    setup_progress "WARNING: avahi is not installed, cannot restrict mDNS to IPv4"
+    return 0
+  fi
+
+  if grep -qE '^use-ipv6=no$' "$conf" && grep -qE '^publish-aaaa-on-ipv4=no$' "$conf"
+  then
+    return 0
+  fi
+
+  # [server]: do not use IPv6 as a transport.
+  if grep -qE '^[#[:blank:]]*use-ipv6=' "$conf"
+  then
+    sed -i -E 's|^[#[:blank:]]*use-ipv6=.*|use-ipv6=no|' "$conf"
+  else
+    sed -i '0,/^\[server\]/s|^\[server\]|[server]\nuse-ipv6=no|' "$conf"
+  fi
+
+  # [publish]: do not hand out AAAA records over IPv4 either, which is the part
+  # that actually keeps clients off the IPv6 address.
+  if grep -qE '^[#[:blank:]]*publish-aaaa-on-ipv4=' "$conf"
+  then
+    sed -i -E 's|^[#[:blank:]]*publish-aaaa-on-ipv4=.*|publish-aaaa-on-ipv4=no|' "$conf"
+  elif grep -qE '^\[publish\]' "$conf"
+  then
+    sed -i '0,/^\[publish\]/s|^\[publish\]|[publish]\npublish-aaaa-on-ipv4=no|' "$conf"
+  else
+    printf '\n[publish]\npublish-aaaa-on-ipv4=no\n' >> "$conf"
+  fi
+
+  systemctl restart avahi-daemon || true
+  setup_progress "mDNS publishes IPv4 only, so a stale IPv6 address cannot strand a client"
+}
+
 function make_root_fs_readonly () {
   copy_script setup/pi/make-root-fs-readonly.sh /tmp
   /tmp/make-root-fs-readonly.sh
@@ -1124,6 +1189,7 @@ ensure_openssh
 # After the packages, because this edits avahi's configuration and avahi is one of
 # the packages. The hostname is set earlier, since other things read it.
 configure_mdns_name
+configure_mdns_ipv4_only
 
 # set time zone so we get decent timestamps in the rest of the setup log
 set_timezone

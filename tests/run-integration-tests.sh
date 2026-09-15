@@ -51,6 +51,7 @@ log "unit tests"
 "$REPO/tests/usb-link-watchdog-test.sh"
 "$REPO/tests/package-install-test.sh"
 "$REPO/tests/ap-channel-test.sh"
+"$REPO/tests/mdns-ipv4-test.sh"
 
 # --- integration tests -----------------------------------------------------
 log "DietPi base image ($BASE_TAG)"
