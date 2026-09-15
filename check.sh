@@ -29,6 +29,8 @@ shellcheck --exclude=SC1091 \
            ./tests/ap-channel-test.sh \
            ./tests/mdns-ipv4-test.sh \
            ./tests/teslausb-url-test.sh \
+           ./tests/timesync-test.sh \
+           ./run/teslausb-timesync.sh \
            ./run/teslausb-url.sh \
            ./tests/integration-test.sh \
            ./tests/run-integration-tests.sh \

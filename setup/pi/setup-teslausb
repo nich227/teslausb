@@ -1259,6 +1259,15 @@ copy_script run/teslausb-url.sh /usr/local/bin
 mv -f /usr/local/bin/teslausb-url.sh /usr/local/bin/teslausb-url
 chmod 755 /usr/local/bin/teslausb-url
 
+# Step the clock when a client network comes up. There is no RTC on this hardware,
+# so at boot the time is whatever fake-hwclock saved at the last shutdown, and the
+# device boots whenever the car wakes. ntpsec corrects it eventually but disciplines
+# rather than steps, so everything logged in the meantime carries a stale timestamp
+# and archiveloop.log reads out of order.
+copy_script run/teslausb-timesync.sh /etc/network/if-up.d
+mv -f /etc/network/if-up.d/teslausb-timesync.sh /etc/network/if-up.d/teslausb-timesync
+chmod 755 /etc/network/if-up.d/teslausb-timesync
+
 # source setup-teslausb from .bashrc to set up completion
 if ! grep -q envsetup.sh /root/.bashrc
 then
