@@ -179,13 +179,19 @@ function unblock_wifi () {
   #                                   the next boot, which is the boot that
   #                                   actually brings wifi up
   # Neither needs a package.
+  #
+  # The two directories come from the environment, defaulting to the real ones,
+  # so the unit tests can point them at a fixture. Same approach as
+  # run/usb-link-watchdog.sh.
   local dev saved
+  local sysfs_dir="${RFKILL_SYSFS_DIR:-/sys/class/rfkill}"
+  local saved_dir="${RFKILL_SAVED_DIR:-/var/lib/systemd/rfkill}"
 
   if command -v rfkill > /dev/null
   then
     rfkill unblock wifi &> /dev/null || true
   else
-    for dev in /sys/class/rfkill/*
+    for dev in "$sysfs_dir"/*
     do
       [ -e "$dev/type" ] || continue
       [ "$(cat "$dev/type" 2> /dev/null)" = "wlan" ] || continue
@@ -195,7 +201,7 @@ function unblock_wifi () {
 
   # Unlike upstream this checks the glob matched, so that when it does not the
   # shell cannot create a file literally named "*:wlan".
-  for saved in /var/lib/systemd/rfkill/*:wlan
+  for saved in "$saved_dir"/*:wlan
   do
     [ -e "$saved" ] || continue
     echo 0 > "$saved" 2> /dev/null || true
