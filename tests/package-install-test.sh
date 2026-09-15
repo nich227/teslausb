@@ -212,5 +212,45 @@ else fail "web UI downloadzip.sh does use zip (guard is meaningful)" "zip not re
 fi
 
 echo
+echo "cgi-bin scripts are executable"
+# fcgiwrap returns 403 for a script it cannot execute, and configure-web.sh copies
+# the webroot straight out of the repository, so a cgi script committed without
+# the executable bit is a broken endpoint on every install. camusage.sh, and with
+# it the Recordings storage panel, was dead this way: the fetch 403'd and the
+# panel shimmered forever.
+cgi_dir="$REPO/teslausb-www/html/cgi-bin"
+if [ -d "$cgi_dir" ]
+then
+  non_exec=""
+  for f in "$cgi_dir"/*.sh
+  do
+    [ -e "$f" ] || continue
+    [ -x "$f" ] || non_exec="$non_exec $(basename "$f")"
+  done
+  if [ -z "$non_exec" ]
+  then
+    pass "every cgi-bin script is executable ($(find "$cgi_dir" -name '*.sh' | wc -l) scripts)"
+  else
+    fail "every cgi-bin script is executable" "not executable:$non_exec"
+  fi
+
+  # git tracks only the executable bit, so check the recorded mode too: a local
+  # chmod that is never committed would leave the shipped copy broken.
+  if command -v git > /dev/null && git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1
+  then
+    tracked_non_exec=$(git -C "$REPO" ls-files -s teslausb-www/html/cgi-bin |
+      awk '$1 != "100755" { print $4 }')
+    if [ -z "$tracked_non_exec" ]
+    then
+      pass "and git records mode 100755 for all of them"
+    else
+      fail "and git records mode 100755 for all of them" "$(echo "$tracked_non_exec" | tr '\n' ' ')"
+    fi
+  fi
+else
+  fail "cgi-bin directory exists" "$cgi_dir not found"
+fi
+
+echo
 printf 'passed: %d  failed: %d\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ] || exit 1
