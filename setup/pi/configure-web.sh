@@ -24,7 +24,13 @@ mkdir -p /var/lib/nginx
 mount /var/log/nginx
 mount /var/lib/nginx
 
-apt-get -y install nginx fcgiwrap libnginx-mod-http-fancyindex fuse libfuse-dev g++ net-tools wireless-tools ethtool
+# zip is needed by the web UI's own cgi-bin/downloadzip.sh, which offers any
+# recording folder as a zip and is part of the interface on every install. It
+# used to be installed only alongside the music/lightshow/boombox autofs mounts
+# further down, so on a dashcam-only DietPi device the download button produced
+# an empty file. Raspberry Pi OS Lite ships zip, which is why this was never
+# noticed upstream.
+apt-get -y install nginx fcgiwrap libnginx-mod-http-fancyindex fuse libfuse-dev g++ net-tools wireless-tools ethtool zip
 
 # install data files and config files
 systemctl stop nginx.service &> /dev/null || true
@@ -90,7 +96,6 @@ then
   mkdir -p /var/www/html/fs
   copy_script run/auto.www /root/bin
   echo "/var/www/html/fs  /root/bin/auto.www" > /etc/auto.master.d/www.autofs
-  apt-get -y install zip
 fi
 
 setup_progress "done configuring nginx"
