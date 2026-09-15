@@ -1,3 +1,21 @@
+/* Cloudscape applies its typography only inside its own component scopes
+   (.awsui_root_*, .awsui_body_* and friends) and never to the body element, so
+   anything rendered outside a Cloudscape component inherits the browser's
+   default font instead. That is why the "USB" in the custom header bar rendered
+   in Times New Roman on iOS Safari, whose default standard font is serif, while
+   looking fine on desktops whose default happens to be a sans. The Tesla
+   wordmark beside it is an inline SVG path, so only the text half was affected.
+
+   The @font-face rules in @cloudscape-design/global-styles are top level and
+   embed Open Sans as base64, so naming the family here matches the rest of the
+   UI without loading anything extra. The stack is written out rather than read
+   from --font-family-base, because Cloudscape only defines that with a build
+   hash (--font-family-base-c9u5cr) which changes between versions. It ends in a
+   generic family so no user-agent default can apply again. */
+body {
+  font-family: 'Open Sans', 'Helvetica Neue', Roboto, Arial, sans-serif;
+}
+
 /* Custom header bar (Tesla logo centered + settings right), discrete, themed inline */
 .tu-header {
   position: sticky;
