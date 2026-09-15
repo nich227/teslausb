@@ -9,6 +9,26 @@ function log_progress () {
   echo "verify-and-configure-archive: $1"
 }
 
+function install_required_packages () {
+  # rclone is in neither the DietPi nor the Raspberry Pi OS base image, and no
+  # other part of setup installs it, so a device configured for the rclone
+  # backend reaches verify_configuration with no rclone at all. The `rclone lsd`
+  # below then fails with "command not found" and reports the misleading
+  # "Could not find the $RCLONE_DRIVE:$RCLONE_PATH" instead of the real cause.
+  #
+  # Only installed when missing, so a newer rclone installed by hand from
+  # rclone.org (which is what rclone's own documentation recommends) is left
+  # alone rather than being shadowed by the distribution package.
+  if command -v rclone > /dev/null
+  then
+    return
+  fi
+  log_progress "rclone is not installed, installing it"
+  apt-get -y install rclone
+}
+
+install_required_packages
+
 function verify_configuration () {
     log_progress "Verifying rclone configuration..."
     if ! [ -e "/root/.config/rclone/rclone.conf" ]
