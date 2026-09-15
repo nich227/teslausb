@@ -178,14 +178,21 @@ export default function Dashboard({ config }: { config: Config | null }) {
   const [toggling, setToggling] = useState(false);
   const timer = useRef<number>();
   const [camUsage, setCamUsage] = useState<CamUsage | null>(null);
+  // Distinct from camUsage staying null: null means "still loading", this means
+  // the request finished and failed. Without it a failed fetch left the panel
+  // shimmering forever, which is what a non-executable camusage.sh looked like.
+  const [camUsageError, setCamUsageError] = useState<string | null>(null);
   const hasCam = config?.has_cam === 'yes';
 
   useEffect(() => {
     if (!hasCam) return;
     api
       .getCamUsage()
-      .then(setCamUsage)
-      .catch(() => setCamUsage(null));
+      .then((u) => {
+        setCamUsage(u);
+        setCamUsageError(null);
+      })
+      .catch((e: unknown) => setCamUsageError(e instanceof Error ? e.message : String(e)));
   }, [hasCam]);
 
   async function load() {
@@ -414,7 +421,11 @@ export default function Dashboard({ config }: { config: Config | null }) {
               </Header>
             }
           >
-            {camUsage === null ? (
+            {camUsageError !== null ? (
+              <Alert type="error" header="Could not read recording sizes">
+                {camUsageError}
+              </Alert>
+            ) : camUsage === null ? (
               <Box textAlign="center" padding={{ vertical: 'l' }}>
                 <div
                   className="tu-skel"
