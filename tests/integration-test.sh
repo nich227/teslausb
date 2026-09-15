@@ -1274,6 +1274,82 @@ run_bootstrap
 assert_file /boot/teslausb-headless-setup.log "wrote the headless setup log"
 
 # ===========================================================================
+banner "rsync archiving: the path on the far end"
+
+# rsync 3.2.4 protects args by default, so the remote path is no longer parsed by a shell
+# and an escaped space becomes part of the directory name. A config written for an older
+# rsync therefore starts archiving into a directory nobody meant, beside the real one,
+# which is how a device came to have both "Tesla Cam" and "Tesla\ Cam" on its NAS.
+rsync_archive_env () {
+  rm -rf /tmp/rsync-args
+  mkdir -p /tmp/rsync-args /tmp/clips
+  cat > "$STUBS/rsync" << 'STUB'
+#!/bin/bash
+# record the destination, which is always the last argument
+printf '%s\n' "${!#}" >> /tmp/rsync-args/dest
+exit 0
+STUB
+  chmod +x "$STUBS/rsync"
+  : > /tmp/clips/list
+}
+
+run_archive_clips () {
+  ( trace_bash "$REPO/run/rsync_archive/archive-clips.sh" /tmp/clips /tmp/clips/list ) \
+    > /tmp/archive-clips.log 2>&1
+  ARCHIVE_RC=$?
+  return 0
+}
+
+start_case "a path with escaped spaces is corrected, not used as it stands"
+rsync_archive_env
+RSYNC_USER=archiver RSYNC_SERVER=nas RSYNC_PATH='/KevNAS/Tesla\ Cam' run_archive_clips
+assert_equals "0" "$ARCHIVE_RC" "archiving still succeeds"
+assert_grep "^archiver@nas:/KevNAS/Tesla Cam$" /tmp/rsync-args/dest \
+  "rsync is given the path the directory actually has"
+assert_no_grep "Tesla..... Cam" /tmp/rsync-args/dest "and not the escaped one"
+assert_grep "Remove the backslashes" /tmp/archive-rsync-cmd.log \
+  "the log says what it did and how to stop it happening"
+
+start_case "a path with real spaces is passed through untouched"
+rsync_archive_env
+RSYNC_USER=archiver RSYNC_SERVER=nas RSYNC_PATH='/KevNAS/Tesla Cam' run_archive_clips
+assert_equals "0" "$ARCHIVE_RC" "succeeds"
+assert_grep "^archiver@nas:/KevNAS/Tesla Cam$" /tmp/rsync-args/dest "the path is unchanged"
+
+start_case "an ordinary path is left completely alone"
+rsync_archive_env
+rm -f /tmp/archive-rsync-cmd.log
+RSYNC_USER=archiver RSYNC_SERVER=nas RSYNC_PATH=/srv/teslausb run_archive_clips
+assert_grep "^archiver@nas:/srv/teslausb$" /tmp/rsync-args/dest "passed through"
+assert_no_file /tmp/archive-rsync-cmd.log "and nothing is logged about it"
+
+start_case "every pair of arguments is archived"
+rsync_archive_env
+RSYNC_USER=archiver RSYNC_SERVER=nas RSYNC_PATH=/srv/teslausb \
+  bash "$REPO/run/rsync_archive/archive-clips.sh" /tmp/clips /tmp/clips/list \
+    /tmp/clips /tmp/clips/list > /dev/null 2>&1
+assert_equals "2" "$(wc -l < /tmp/rsync-args/dest)" "two pairs, two transfers"
+
+start_case "a failing transfer is reported with both logs"
+rsync_archive_env
+printf '#!/bin/bash\necho "rsync: some failure" >&2\nexit 12\n' > "$STUBS/rsync"
+chmod +x "$STUBS/rsync"
+: > /tmp/archive-rsync-cmd.log
+RSYNC_USER=archiver RSYNC_SERVER=nas RSYNC_PATH=/srv/teslausb run_archive_clips
+assert_equals "1" "$ARCHIVE_RC" "exits non-zero"
+assert_file /tmp/archive-error.log "the error log is written for archiveloop to pick up"
+
+start_case "rsync's partial transfer code is not treated as a failure"
+# 24 is "some files vanished before they could be sent", which happens routinely when the
+# car is still writing, and must not fail the archive.
+rsync_archive_env
+printf '#!/bin/bash\nexit 24\n' > "$STUBS/rsync"
+chmod +x "$STUBS/rsync"
+RSYNC_USER=archiver RSYNC_SERVER=nas RSYNC_PATH=/srv/teslausb run_archive_clips
+assert_equals "0" "$ARCHIVE_RC" "treated as success"
+
+rm -f "$STUBS/rsync"
+
 banner "the flashable image: Automation_Custom_PreScript.sh"
 
 # The image can only ask the user to edit the boot partition, because that is the only

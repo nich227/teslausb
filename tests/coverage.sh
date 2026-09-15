@@ -37,6 +37,7 @@ else
     setup/pi/first-boot.sh
     dietpi/Automation_Custom_Script.sh
     dietpi/Automation_Custom_PreScript.sh
+    run/rsync_archive/archive-clips.sh
     tools/prepare-boot-partition.sh
   )
 fi

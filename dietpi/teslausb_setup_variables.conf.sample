@@ -69,7 +69,9 @@ export SHARE_PASSWORD='password'
 #export ARCHIVE_SYSTEM=rsync
 #export RSYNC_USER=username
 #export RSYNC_SERVER=hostname_or_ip
-#export RSYNC_PATH=path_on_server
+# Quote the path if it contains spaces, and do not escape them: modern rsync treats a
+# backslash as part of the name rather than as an escape.
+#export RSYNC_PATH='path_on_server'
 
 # Variables for rclone archiving
 # If you are using rclone to archive to a local (non-cloud) server,

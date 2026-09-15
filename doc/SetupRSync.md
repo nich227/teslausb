@@ -54,7 +54,7 @@ Explanations for each:
 - `ARCHIVE_SYSTEM`: `rsync` for enabling rsync
 - `RSYNC_USER`: The user on the SFTP server
 - `RSYNC_SERVER`: The IP address/hostname of the destination machine
-- `RSYNC_PATH`: The path on the destination machine where the files will be saved
+- `RSYNC_PATH`: The path on the destination machine where the files will be saved. Write it exactly as it appears on that machine, and quote the whole value if it contains spaces, for example `export RSYNC_PATH='/mnt/storage/Tesla Cam'`. Do not escape the spaces with backslashes: rsync 3.2.4 and later send the path to the far end over the protocol rather than through a remote shell, so a backslash is part of the name rather than an escape, and you end up archiving into a directory called `Tesla\ Cam`.
 
 An example config is below:
 

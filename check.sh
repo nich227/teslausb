@@ -13,6 +13,7 @@ shellcheck --exclude=SC1091 \
            ./dietpi/Automation_Custom_PreScript.sh \
            ./tools/build-image.sh \
            ./run/archiveloop \
+           ./run/rsync_archive/archive-clips.sh \
            ./run/auto.teslausb \
            ./run/awake_start \
            ./run/awake_stop \
