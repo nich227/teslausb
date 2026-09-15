@@ -331,6 +331,32 @@ export default function Dashboard({ config }: { config: Config | null }) {
     </SpaceBetween>
   );
 
+  // The access point, shown only when one is running. It matters most in the
+  // branch below where the client wifi is down, since then it is the only way in.
+  const apSection = status?.ap_ssid ? (
+    <div>
+      <Box variant="awsui-key-label">Access point</Box>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 4 }}>
+        <Icon name="status-positive" variant="success" />
+        <Box fontSize="heading-m" fontWeight="bold">
+          {status.ap_ssid}
+        </Box>
+      </div>
+      <Box padding={{ top: 'xs' }}>
+        <ColumnLayout columns={3} variant="text-grid">
+          <Value
+            label="Channel"
+            info="This radio can only be on one channel at a time, so while the device is connected to a network the access point has to use that network's channel."
+          >
+            {status.ap_channel || '—'}
+          </Value>
+          <Value label="Address">{status.ap_ip || '—'}</Value>
+          <Value label="Clients">{status.ap_clients || '0'}</Value>
+        </ColumnLayout>
+      </Box>
+    </div>
+  ) : null;
+
   const networkContent = loading ? (
     <SpaceBetween size="m">
       <Skel w={220} />
@@ -365,6 +391,7 @@ export default function Dashboard({ config }: { config: Config | null }) {
           {status!.ether_speed}, {status!.ether_ip}
         </Value>
       )}
+      {apSection}
     </SpaceBetween>
   ) : (
     <SpaceBetween size="m">
@@ -377,6 +404,7 @@ export default function Dashboard({ config }: { config: Config | null }) {
           {status!.ether_speed}, {status!.ether_ip}
         </Value>
       )}
+      {apSection}
     </SpaceBetween>
   );
 

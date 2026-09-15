@@ -26,6 +26,11 @@ export interface Status {
   wifi_freq: string;
   wifi_strength: string; // e.g. "57/70"
   wifi_ip: string;
+  // Access point fields, empty when no AP is configured or it is not running.
+  ap_ssid?: string;
+  ap_channel?: string;
+  ap_ip?: string;
+  ap_clients?: string;
 }
 
 export interface Config {

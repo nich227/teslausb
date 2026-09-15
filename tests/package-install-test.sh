@@ -252,5 +252,61 @@ else
 fi
 
 echo
+echo "status.sh emits valid JSON"
+# Everything on the dashboard comes from this one endpoint, so a stray newline in
+# any value takes the whole page down, not just the field that produced it. That
+# is how it broke: `iw ... | grep -c '^Station' || echo 0` printed 0 from grep and
+# 0 again from the fallback, because grep -c exits 1 when it matches nothing.
+status_sh="$REPO/teslausb-www/html/cgi-bin/status.sh"
+if [ -e "$status_sh" ]
+then
+  # No shell fallback may follow a `grep -c`, which already prints 0 on no match.
+  if grep -nE 'grep -c[^|]*\|\|[[:space:]]*echo' "$status_sh" > /dev/null
+  then
+    fail "no 'grep -c ... || echo' that would emit two lines" \
+         "$(grep -nE 'grep -c[^|]*\|\|[[:space:]]*echo' "$status_sh")"
+  else
+    pass "no 'grep -c ... || echo' that would emit two lines"
+  fi
+
+  # Run it with a fake iw and ip so the AP branch is exercised, and parse the body.
+  fixture=$(mktemp -d)
+  mkdir -p "$fixture/bin" "$fixture/net/ap0"
+  cat > "$fixture/bin/iw" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "dev ap0 info") printf 'Interface ap0\n\tssid X AE A-XII\n\tchannel 9 (2452 MHz), width: 20 MHz\n' ;;
+  "dev ap0 station dump") : ;;   # no stations, the case that broke it
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$fixture/bin/iw"
+  sed -e "s|^readonly IW=.*|readonly IW=$fixture/bin/iw|" \
+      -e "s|-d /sys/class/net/ap0|-d $fixture/net/ap0|" \
+      "$status_sh" > "$fixture/status.sh"
+  chmod +x "$fixture/status.sh"
+
+  out=$( cd / && "$fixture/status.sh" 2>/dev/null )
+  body=$(printf '%s\n' "$out" | sed -n '/^{/,$p')
+  if printf '%s' "$body" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null
+  then
+    pass "output parses as JSON with no stations associated"
+  else
+    fail "output parses as JSON with no stations associated" \
+         "$(printf '%s' "$body" | tail -6 | tr '\n' '|')"
+  fi
+  if printf '%s' "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("ap_clients")=="0" else 1)' 2>/dev/null
+  then
+    pass "ap_clients is a single 0, not two lines"
+  else
+    fail "ap_clients is a single 0, not two lines" \
+         "got $(printf '%s' "$body" | python3 -c 'import json,sys; print(repr(json.load(sys.stdin).get("ap_clients")))' 2>/dev/null)"
+  fi
+  rm -rf "$fixture"
+else
+  fail "status.sh exists" "$status_sh not found"
+fi
+
+echo
 printf 'passed: %d  failed: %d\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ] || exit 1

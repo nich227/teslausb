@@ -46,6 +46,26 @@ fi
 
 read -r -d ' ' ut < /proc/uptime
 
+# Access point, when one is configured. Everything here stays empty if the AP is
+# not running, so the dashboard can simply hide the panel. `iw` lives in /usr/sbin,
+# which is not on the CGI process's PATH.
+readonly IW=/usr/sbin/iw
+ap_ssid=""
+ap_channel=""
+ap_ip=""
+ap_clients=""
+if [ -d /sys/class/net/ap0 ]
+then
+  ap_ssid=$("$IW" dev ap0 info 2> /dev/null | sed -n 's/^\s*ssid \(.*\)$/\1/p')
+  ap_channel=$("$IW" dev ap0 info 2> /dev/null | sed -n 's/^\s*channel \([0-9]*\).*/\1/p')
+  ap_ip=$(ip -4 -br addr show ap0 2> /dev/null | awk '{print $3}' | cut -d/ -f1)
+  # One line per associated station. grep -c already prints 0 when it matches
+  # nothing, and exits 1 while doing so, so a `|| echo 0` fallback would append a
+  # second line and put a newline inside the JSON value.
+  ap_clients=$("$IW" dev ap0 station dump 2> /dev/null | grep -c '^Station') || true
+  [ -n "$ap_clients" ] || ap_clients=0
+fi
+
 fan_speed=$(cat /sys/devices/platform/cooling_fan/hwmon/*/fan1_input 2>/dev/null || echo "N/A")
 
 external_5v=$(sudo -n vcgencmd pmic_read_adc EXT5V_V 2>/dev/null) && external_5v=${external_5v##*=} && external_5v=${external_5v%V} || external_5v="N/A"
@@ -72,6 +92,10 @@ Content-type: application/json
    "wifi_strength": "$wifi_strength",
    "wifi_ip": "$wifi_ip",
    "ether_ip": "$ether_ip",
-   "ether_speed": "$ether_speed"
+   "ether_speed": "$ether_speed",
+   "ap_ssid": "$ap_ssid",
+   "ap_channel": "$ap_channel",
+   "ap_ip": "$ap_ip",
+   "ap_clients": "$ap_clients"
 }
 EOF
