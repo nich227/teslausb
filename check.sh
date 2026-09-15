@@ -28,6 +28,8 @@ shellcheck --exclude=SC1091 \
            ./tests/package-install-test.sh \
            ./tests/ap-channel-test.sh \
            ./tests/mdns-ipv4-test.sh \
+           ./tests/teslausb-url-test.sh \
+           ./run/teslausb-url.sh \
            ./tests/integration-test.sh \
            ./tests/run-integration-tests.sh \
            ./tests/coverage.sh \

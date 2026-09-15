@@ -52,6 +52,7 @@ log "unit tests"
 "$REPO/tests/package-install-test.sh"
 "$REPO/tests/ap-channel-test.sh"
 "$REPO/tests/mdns-ipv4-test.sh"
+"$REPO/tests/teslausb-url-test.sh"
 
 # --- integration tests -----------------------------------------------------
 log "DietPi base image ($BASE_TAG)"

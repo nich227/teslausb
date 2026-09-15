@@ -1252,6 +1252,13 @@ copy_script setup/pi/configure-web.sh /tmp
 copy_script setup/pi/configure-ssh.sh /tmp
 /tmp/configure-ssh.sh
 
+# Prints the URLs the web interface answers on, used by the login tip below. Its
+# own file rather than inline substitutions, so it runs at login and follows a
+# changed address or mDNS name instead of being frozen at setup time.
+copy_script run/teslausb-url.sh /usr/local/bin
+mv -f /usr/local/bin/teslausb-url.sh /usr/local/bin/teslausb-url
+chmod 755 /usr/local/bin/teslausb-url
+
 # source setup-teslausb from .bashrc to set up completion
 if ! grep -q envsetup.sh /root/.bashrc
 then
@@ -1283,7 +1290,7 @@ then
 		cat << TESLAUSB_TIP1
 		Run 'sudo -i' if you need to make changes.
 
-		The TeslaUSB web interface is at http://$(hostname -s) or http://$(hostname -I | awk '{print $1}')
+		The TeslaUSB web interface is at \$(/usr/local/bin/teslausb-url)
 
 		TESLAUSB_TIP1
 	fi

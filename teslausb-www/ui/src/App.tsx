@@ -61,7 +61,7 @@ export default function App() {
     {
       type: 'link',
       text: 'TeslaUSB on GitHub',
-      href: 'https://github.com/marcone/teslausb',
+      href: 'https://github.com/nich227/teslausb',
       external: true,
     },
   ];
