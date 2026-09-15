@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "prettier --check .",
     "format": "prettier --write .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@cloudscape-design/components": "^3.0.0",
@@ -19,11 +21,17 @@
     "react-router-dom": "^7.18.3"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "@vitest/coverage-v8": "^5.0.1",
+    "jsdom": "^30.0.1",
     "prettier": "3.9.6",
     "typescript": "^5.5.4",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   }
 }
