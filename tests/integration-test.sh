@@ -791,6 +791,84 @@ assert_file /tmp/remount.calls "remounted the root read-write first"
 assert_file /boot/dietpi-wifi.txt "then wrote the credentials"
 rm -f /root/bin/remountfs_rw
 
+start_case "clears a soft-blocked radio through sysfs when rfkill is absent"
+# DietPi does not ship rfkill and this runs before there is any network, so there
+# is no way to install it. The unblock has to work through the kernel's own
+# interfaces. Both directories are taken from the environment so this can point
+# them at a fixture.
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+rm -f /teslausb/WIFI_ENABLED /boot/dietpi-wifi.txt
+rm -rf /tmp/rfkill-sys /tmp/rfkill-saved
+mkdir -p /tmp/rfkill-sys/rfkill0 /tmp/rfkill-sys/rfkill1 /tmp/rfkill-saved
+echo wlan > /tmp/rfkill-sys/rfkill0/type
+echo 1 > /tmp/rfkill-sys/rfkill0/soft
+echo bluetooth > /tmp/rfkill-sys/rfkill1/type
+echo 1 > /tmp/rfkill-sys/rfkill1/soft
+echo 1 > /tmp/rfkill-saved/0:phy0:wlan
+echo 1 > /tmp/rfkill-saved/1:hci0:bluetooth
+export RFKILL_SYSFS_DIR=/tmp/rfkill-sys RFKILL_SAVED_DIR=/tmp/rfkill-saved
+for f in dietpi-wifidb dietpi-set_hardware change_hostname
+do
+  printf '#!/bin/bash\nexit 0\n' > "/boot/dietpi/func/$f"
+  chmod +x "/boot/dietpi/func/$f"
+done
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_eq "$(cat /tmp/rfkill-sys/rfkill0/soft)" "0" "cleared the wlan soft block"
+assert_eq "$(cat /tmp/rfkill-sys/rfkill1/soft)" "1" "left the bluetooth radio alone"
+assert_eq "$(cat /tmp/rfkill-saved/0:phy0:wlan)" "0" \
+  "cleared systemd's saved wlan state, which is restored on the next boot"
+assert_eq "$(cat /tmp/rfkill-saved/1:hci0:bluetooth)" "1" \
+  "left systemd's saved bluetooth state alone"
+
+start_case "uses the rfkill command when it is installed"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+rm -f /teslausb/WIFI_ENABLED /boot/dietpi-wifi.txt /tmp/rfkill.calls
+cat > "$STUBS/rfkill" <<'EOF'
+#!/bin/bash
+echo "rfkill $*" >> /tmp/rfkill.calls
+exit 0
+EOF
+chmod +x "$STUBS/rfkill"
+rm -rf /tmp/rfkill-sys /tmp/rfkill-saved
+mkdir -p /tmp/rfkill-sys /tmp/rfkill-saved
+echo 1 > /tmp/rfkill-saved/0:phy0:wlan
+export RFKILL_SYSFS_DIR=/tmp/rfkill-sys RFKILL_SAVED_DIR=/tmp/rfkill-saved
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_grep "rfkill unblock wifi" /tmp/rfkill.calls "asked rfkill to unblock wifi"
+assert_eq "$(cat /tmp/rfkill-saved/0:phy0:wlan)" "0" \
+  "and still wrote the saved state, which rfkill does not touch"
+rm -f "$STUBS/rfkill"
+
+start_case "an empty saved-state directory does not create a file named after the glob"
+setup_driver_env
+install_fake_setup
+touch /tmp/bootpart/TESLAUSB_SETUP_FINISHED
+rm -f /teslausb/WIFI_ENABLED /boot/dietpi-wifi.txt
+rm -rf /tmp/rfkill-sys /tmp/rfkill-saved
+mkdir -p /tmp/rfkill-sys /tmp/rfkill-saved
+export RFKILL_SYSFS_DIR=/tmp/rfkill-sys RFKILL_SAVED_DIR=/tmp/rfkill-saved
+cat > /root/teslausb_setup_variables.conf <<'EOF'
+export SSID='MyNetwork'
+export WIFIPASS='sekrit pass'
+EOF
+run_driver
+assert_no_file '/tmp/rfkill-saved/*:wlan' "no file created from the unmatched glob"
+assert_eq "$(find /tmp/rfkill-saved -mindepth 1 | wc -l)" "0" "saved-state directory is still empty"
+unset RFKILL_SYSFS_DIR RFKILL_SAVED_DIR
+rm -rf /tmp/rfkill-sys /tmp/rfkill-saved
+
 start_case "wifi is configured only once"
 setup_driver_env
 install_fake_setup
