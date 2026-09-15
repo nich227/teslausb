@@ -67,8 +67,15 @@ readonly AP_UNIT=/etc/systemd/system/teslausb-ap.service
 
 # iw is force-installed because it would otherwise be autoremoved along with
 # alsa-utils later in setup.
-log_progress "installing hostapd, dnsmasq and iw"
-DEBIAN_FRONTEND=noninteractive apt-get -y install iw hostapd dnsmasq || exit 1
+#
+# iptables is needed for the MASQUERADE rule further down. Raspberry Pi OS Lite
+# ships it, which is why the upstream scripts never installed it, and upstream's
+# access point used NetworkManager's ipv4.method=shared and so needed no explicit
+# NAT rule at all. On DietPi neither is true: iptables is absent, and the rule in
+# teslausb-ap-up fails with "iptables: command not found", leaving access point
+# clients able to reach this device but with no route to the internet.
+log_progress "installing hostapd, dnsmasq, iw and iptables"
+DEBIAN_FRONTEND=noninteractive apt-get -y install iw hostapd dnsmasq iptables || exit 1
 
 # The packaged hostapd service reads /etc/hostapd/hostapd.conf and would fight
 # ours for the interface. Ours is a separate unit with its own config.
