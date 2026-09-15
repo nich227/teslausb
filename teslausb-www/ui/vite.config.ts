@@ -13,9 +13,24 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
-        manualChunks: {
-          cloudscape: ['@cloudscape-design/components', '@cloudscape-design/global-styles'],
-          react: ['react', 'react-dom', 'react-router-dom'],
+        // vite 8 bundles with rolldown, which accepts only the function form of
+        // manualChunks and rejects the object map rollup allowed ("manualChunks
+        // is not a function"). Same two chunks as before: Cloudscape on its own,
+        // and React with the router, so the dashboard's first paint does not pull
+        // the whole component library.
+        manualChunks(id) {
+          if (id.includes('/node_modules/@cloudscape-design/')) {
+            return 'cloudscape';
+          }
+          if (
+            id.includes('/node_modules/react/') ||
+            id.includes('/node_modules/react-dom/') ||
+            id.includes('/node_modules/react-router') ||
+            id.includes('/node_modules/scheduler/')
+          ) {
+            return 'react';
+          }
+          return undefined;
         },
       },
     },
