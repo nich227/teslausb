@@ -19,5 +19,31 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
+      # Component tests in jsdom against the real Cloudscape components, so a
+      # regression in how a control renders is caught rather than only a type
+      # error. No browser needed, so this runs on a plain runner.
+      - name: Tests
+        run: npm test
       - name: Build
         run: npm run build
+      # The device serves the prebuilt bundle from teslausb-www/html; nothing on
+      # the Pi runs vite. A build whose output was never committed ships the old
+      # UI, silently, so fail if the tracked bundle is out of date. index.html is
+      # compared rather than the hashed asset names, since it references them all.
+      - name: Shipped bundle is up to date
+        run: |
+          if ! diff -q dist/index.html ../html/index.html > /dev/null
+          then
+            echo "teslausb-www/html is stale: rebuild and commit the bundle." >&2
+            echo "--- committed ---"; cat ../html/index.html
+            echo "--- just built ---"; cat dist/index.html
+            exit 1
+          fi
+          missing=0
+          for f in dist/assets/*; do
+            if [ ! -e "../html/assets/$(basename "$f")" ]; then
+              echo "missing from teslausb-www/html/assets: $(basename "$f")" >&2
+              missing=1
+            fi
+          done
+          exit "$missing"
