@@ -64,6 +64,9 @@ readonly AP_RUNTIME_CONF=/run/teslausb-ap.conf
 readonly AP_DNSMASQ=/etc/dnsmasq.d/teslausb-ap.conf
 readonly AP_UP=/usr/local/bin/teslausb-ap-up
 readonly AP_UNIT=/etc/systemd/system/teslausb-ap.service
+readonly AP_CHANNEL=/usr/local/bin/teslausb-ap-channel.sh
+readonly AP_CHANNEL_UNIT=/etc/systemd/system/teslausb-ap-channel.service
+readonly AP_CHANNEL_TIMER=/etc/systemd/system/teslausb-ap-channel.timer
 
 # iw is force-installed because it would otherwise be autoremoved along with
 # alsa-utils later in setup.
@@ -162,7 +165,10 @@ iw dev "$client" set power_save off || true
 iw dev ap0 set power_save off || true
 
 # One radio cannot be on two channels, so the access point follows the client. If
-# the client has not associated, whatever channel is already in the config stands.
+# the client has not associated, the radio is free, and the least congested
+# channel is chosen by scanning rather than leaving the default to stand: the
+# default is one fixed channel, which on a crowded band is as likely to be the
+# worst choice as the best.
 freq=$(iw dev "$client" link 2> /dev/null | awk '/freq/ {print $2; exit}')
 if [ -n "${freq:-}" ]
 then
@@ -175,6 +181,14 @@ then
     band=g
   fi
   log "following the client onto channel $channel"
+elif [ -x /usr/local/bin/teslausb-ap-channel.sh ]
+then
+  if picked=$(/usr/local/bin/teslausb-ap-channel.sh best 2> /dev/null) && [ -n "$picked" ]
+  then
+    channel="$picked"
+    band=g
+    log "no client association, picked the least congested channel $channel"
+  fi
 fi
 
 # Generate the config hostapd reads. This is on tmpfs, so it works with a
@@ -225,5 +239,55 @@ systemctl daemon-reload
 systemctl enable teslausb-ap.service
 systemctl restart dnsmasq.service &> /dev/null || \
   log_progress "WARNING: dnsmasq did not restart; the access point will hand out no addresses"
+
+# Re-check the channel hourly. This can only move the access point when there is
+# no client association, because the radio allows a single channel for the whole
+# device; when the client pins it, the timer just records what it would have
+# chosen so the router's channel can be judged from where the device sits.
+log_progress "installing the hourly channel check"
+# copy_script is a function exported by setup-teslausb. This script also runs
+# standalone, by hand and in the tests, where it does not exist, so fall back to a
+# plain copy and carry on if the source is not to hand rather than failing setup
+# over an optional extra.
+if declare -F copy_script > /dev/null
+then
+  copy_script run/teslausb-ap-channel.sh "$(dirname "$AP_CHANNEL")"
+  mv -f "$(dirname "$AP_CHANNEL")/teslausb-ap-channel.sh" "$AP_CHANNEL" 2> /dev/null || true
+elif [ -n "${SOURCE_DIR:-}" ] && [ -e "$SOURCE_DIR/run/teslausb-ap-channel.sh" ]
+then
+  install -m 755 "$SOURCE_DIR/run/teslausb-ap-channel.sh" "$AP_CHANNEL"
+else
+  log_progress "WARNING: teslausb-ap-channel.sh not found; the AP will use a fixed channel"
+fi
+[ -e "$AP_CHANNEL" ] && chmod 755 "$AP_CHANNEL"
+
+cat > "$AP_CHANNEL_UNIT" <<EOF
+[Unit]
+Description=teslausb access point channel check
+After=teslausb-ap.service
+
+[Service]
+Type=oneshot
+ExecStart=${AP_CHANNEL} apply
+EOF
+
+cat > "$AP_CHANNEL_TIMER" <<EOF
+[Unit]
+Description=Re-check the teslausb access point channel hourly
+
+[Timer]
+# The device is powered from the car's USB port and boots when the car wakes, so
+# the first check is shortly after boot rather than on the hour.
+OnBootSec=10min
+OnUnitActiveSec=1h
+# Two devices waking together should not scan at the same instant.
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable teslausb-ap-channel.timer &> /dev/null
 
 log_progress "access point configured on ap0 at ${AP_ADDRESS}, ssid ${AP_SSID}"

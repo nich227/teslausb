@@ -26,6 +26,7 @@ shellcheck --exclude=SC1091 \
            ./run/waitforidle \
            ./tests/usb-link-watchdog-test.sh \
            ./tests/package-install-test.sh \
+           ./tests/ap-channel-test.sh \
            ./tests/integration-test.sh \
            ./tests/run-integration-tests.sh \
            ./tests/coverage.sh \
