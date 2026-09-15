@@ -163,6 +163,45 @@ else
   setup_progress "no config file found."
 fi
 
+function unblock_wifi () {
+  # A soft-blocked radio never associates, so this has to happen before the
+  # reboot that brings wifi up.
+  #
+  # The rfkill command cannot be relied on: rfkill is its own package on Bookworm
+  # (it is not part of util-linux), Raspberry Pi OS Lite happens to ship it but
+  # DietPi does not, and this runs before there is any network, so there is no
+  # opportunity to apt-get it. Upstream's call was `|| true`-guarded and the fork
+  # kept only that, so on DietPi a blocked radio stayed blocked silently.
+  #
+  # Both state stores are written, which is what upstream does:
+  #   /sys/class/rfkill/*/soft        live kernel state, effective immediately
+  #   /var/lib/systemd/rfkill/*:wlan  saved state that systemd-rfkill restores on
+  #                                   the next boot, which is the boot that
+  #                                   actually brings wifi up
+  # Neither needs a package.
+  local dev saved
+
+  if command -v rfkill > /dev/null
+  then
+    rfkill unblock wifi &> /dev/null || true
+  else
+    for dev in /sys/class/rfkill/*
+    do
+      [ -e "$dev/type" ] || continue
+      [ "$(cat "$dev/type" 2> /dev/null)" = "wlan" ] || continue
+      echo 0 > "$dev/soft" 2> /dev/null || true
+    done
+  fi
+
+  # Unlike upstream this checks the glob matched, so that when it does not the
+  # shell cannot create a file literally named "*:wlan".
+  for saved in /var/lib/systemd/rfkill/*:wlan
+  do
+    [ -e "$saved" ] || continue
+    echo 0 > "$saved" 2> /dev/null || true
+  done
+}
+
 # Wi-Fi, the plug-and-play way.
 #
 # SSID/WIFIPASS in teslausb_setup_variables.conf still work, exactly as they did
@@ -244,7 +283,7 @@ EOF
     fi
   fi
 
-  rfkill unblock wifi &> /dev/null || true
+  unblock_wifi
 
   touch /teslausb/WIFI_ENABLED
   setup_progress "Rebooting to bring up wifi..."
