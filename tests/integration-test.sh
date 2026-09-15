@@ -2892,6 +2892,168 @@ assert_no_file /tmp/fullroot/sub/nested.html "removed nested files"
 assert_eq "$([ -d /tmp/fullroot/sub ] && echo yes)" yes "kept directories"
 rm -rf /tmp/emptyroot /tmp/fullroot
 
+banner "the clock is stepped when a client network comes up"
+# ===========================================================================
+# There is no RTC on this hardware, so at boot the clock holds whatever
+# fake-hwclock saved at the last shutdown, and the device boots whenever the car
+# wakes. ntpsec disciplines rather than steps, so anything logged before it
+# catches up carries a stale timestamp and archiveloop.log reads out of order.
+# This runs the real if-up.d hook in the container, with the time tools stubbed.
+
+timesync_env () {
+  rm -rf /tmp/tsroot
+  mkdir -p /tmp/tsroot/bin
+  cat > /tmp/tsroot/bin/sntp <<'EOF'
+#!/bin/bash
+echo "sntp $*" >> /tmp/tsroot/calls
+exit "${SNTP_RC:-0}"
+EOF
+  cat > /tmp/tsroot/bin/ntpdig <<'EOF'
+#!/bin/bash
+echo "ntpdig $*" >> /tmp/tsroot/calls
+exit "${NTPDIG_RC:-1}"
+EOF
+  cat > /tmp/tsroot/bin/timeout <<'EOF'
+#!/bin/bash
+shift
+exec "$@"
+EOF
+  cat > /tmp/tsroot/bin/logger <<'EOF'
+#!/bin/bash
+echo "$*" >> /tmp/tsroot/logger
+EOF
+  chmod +x /tmp/tsroot/bin/*
+  : > /tmp/tsroot/calls
+  : > /tmp/tsroot/logger
+}
+
+run_timesync () {
+  # $1 iface, $2 mode
+  ( PATH="/tmp/tsroot/bin:$PATH" \
+    IFACE="$1" MODE="$2" \
+    TESLAUSB_TIMESYNC_FOREGROUND=1 \
+    SYNC_LOG=/tmp/tsroot/synclog \
+    trace_bash "$REPO/run/teslausb-timesync.sh" ) > /tmp/tsroot/out 2>&1
+  TS_RC=$?
+}
+
+start_case "a client interface coming up steps the clock"
+timesync_env
+run_timesync wlan0 start
+assert_eq "$TS_RC" 0 "exits 0"
+assert_grep "sntp -S time.google.com" /tmp/tsroot/calls "stepped with -S, not slewed"
+assert_grep "stepped the clock" /tmp/tsroot/logger "recorded that it happened"
+
+start_case "the access point interface is ignored"
+# ap0 coming up says nothing about reaching the internet.
+timesync_env
+run_timesync ap0 start
+assert_eq "$TS_RC" 0 "exits 0"
+assert_eq "$(wc -c < /tmp/tsroot/calls)" 0 "no time server was contacted"
+
+start_case "loopback and an empty interface are ignored"
+timesync_env
+run_timesync lo start
+assert_eq "$(wc -c < /tmp/tsroot/calls)" 0 "lo: nothing contacted"
+timesync_env
+run_timesync "" start
+assert_eq "$(wc -c < /tmp/tsroot/calls)" 0 "empty IFACE: nothing contacted"
+
+start_case "an interface going down is ignored"
+timesync_env
+run_timesync wlan0 stop
+assert_eq "$(wc -c < /tmp/tsroot/calls)" 0 "MODE=stop: nothing contacted"
+
+start_case "it falls through tools and servers, and never breaks ifup"
+timesync_env
+( export SNTP_RC=1 NTPDIG_RC=0; run_timesync wlan0 start )
+timesync_env
+SNTP_RC=1 NTPDIG_RC=0 run_timesync wlan0 start
+assert_grep "ntpdig -S" /tmp/tsroot/calls "tries ntpdig when sntp fails"
+timesync_env
+SNTP_RC=1 NTPDIG_RC=1 run_timesync wlan0 start
+assert_eq "$TS_RC" 0 "exits 0 even when every server fails"
+assert_grep "129.6.15.28" /tmp/tsroot/calls "moved on to the second server"
+assert_grep "could not reach a time server" /tmp/tsroot/logger "said so"
+
+start_case "by default it syncs in the background, so ifup is not held up"
+# ifupdown runs these hooks synchronously. A reachable but slow time server would
+# otherwise delay bringing the network up, so the default path forks.
+timesync_env
+( PATH="/tmp/tsroot/bin:$PATH" IFACE=wlan0 MODE=start \
+  SYNC_LOG=/tmp/tsroot/synclog \
+  trace_bash "$REPO/run/teslausb-timesync.sh" ) > /tmp/tsroot/out 2>&1
+assert_eq "$?" 0 "returns immediately with 0"
+for _ in 1 2 3 4 5 6 7 8 9 10
+do
+  [ -s /tmp/tsroot/calls ] && break
+  sleep 1
+done
+assert_grep "sntp -S" /tmp/tsroot/calls "the background job still did the work"
+rm -rf /tmp/tsroot
+
+banner "the login tip points at a name that resolves"
+# ===========================================================================
+# avahi publishes <host-name>.local, which is not always the system hostname: a
+# device whose hostname is Kevster-TeslaUSB can answer only to teslausb.local, and
+# the tip used to print the hostname, sending people to a name with no record.
+
+url_env () {
+  rm -rf /tmp/urlroot
+  mkdir -p /tmp/urlroot/bin
+  cat > /tmp/urlroot/bin/hostname <<EOF
+#!/bin/bash
+case "\${1:-}" in
+  -s) echo "$1" ;;
+  -I) echo "$2" ;;
+  *)  echo "$1" ;;
+esac
+EOF
+  chmod +x /tmp/urlroot/bin/hostname
+  if [ -n "${3:-}" ]
+  then
+    printf '%s' "$3" > /tmp/urlroot/avahi.conf
+    URL_CONF=/tmp/urlroot/avahi.conf
+  else
+    URL_CONF=/nonexistent
+  fi
+}
+
+run_url () {
+  ( PATH="/tmp/urlroot/bin:$PATH" AVAHI_CONF="$URL_CONF" \
+    trace_bash "$REPO/run/teslausb-url.sh" )
+}
+
+start_case "the avahi name wins over the system hostname"
+url_env "Kevster-TeslaUSB" "192.168.68.101" "$(printf '[server]\nhost-name=teslausb\n')"
+out=$(run_url)
+assert_eq "$out" "http://teslausb.local or http://192.168.68.101" "prints the resolvable name"
+if grep -q Kevster <<< "$out"
+then not_ok "does not offer the hostname, which has no record"
+else ok "does not offer the hostname, which has no record"
+fi
+
+start_case "without an avahi override it uses the hostname"
+url_env "dashcam" "10.0.0.5" "$(printf '[server]\n#host-name=teslausb\n')"
+assert_eq "$(run_url)" "http://dashcam.local or http://10.0.0.5" "commented host-name is ignored"
+url_env "dashcam" "10.0.0.5"
+assert_eq "$(run_url)" "http://dashcam.local or http://10.0.0.5" "no avahi config at all"
+
+start_case "it picks an address a reader can actually use"
+url_env "teslausb" "192.168.66.1 192.168.68.101" "$(printf '[server]\nhost-name=teslausb\n')"
+assert_eq "$(run_url)" "http://teslausb.local or http://192.168.68.101" "skips the access point subnet"
+url_env "teslausb" "192.168.66.1" "$(printf '[server]\nhost-name=teslausb\n')"
+assert_eq "$(run_url)" "http://teslausb.local" "only an AP address: name only"
+# mDNS no longer publishes AAAA, so offering an IPv6 address here would send a
+# reader somewhere the name deliberately does not point.
+url_env "teslausb" "fd73:5747:499d:18e1::1 192.168.68.101" "$(printf '[server]\nhost-name=teslausb\n')"
+assert_eq "$(run_url)" "http://teslausb.local or http://192.168.68.101" "skips IPv6"
+url_env "teslausb" "169.254.7.7 192.168.68.101" "$(printf '[server]\nhost-name=teslausb\n')"
+assert_eq "$(run_url)" "http://teslausb.local or http://192.168.68.101" "skips link-local"
+url_env "teslausb" "" "$(printf '[server]\nhost-name=teslausb\n')"
+assert_eq "$(run_url)" "http://teslausb.local" "no address at all: name only"
+rm -rf /tmp/urlroot
+
 # ===========================================================================
 if [ -n "${COVERAGE:-}" ]
 then

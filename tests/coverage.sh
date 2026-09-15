@@ -38,6 +38,8 @@ else
     dietpi/Automation_Custom_Script.sh
     dietpi/Automation_Custom_PreScript.sh
     run/rsync_archive/archive-clips.sh
+    run/teslausb-timesync.sh
+    run/teslausb-url.sh
     tools/prepare-boot-partition.sh
   )
 fi
