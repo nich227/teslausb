@@ -17,8 +17,13 @@ jobs:
         shell: bash
         run: |
           version=0.11.0
-          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.linux.x86_64.tar.xz" |
-            sudo tar -xJ --strip-components=1 -C /usr/local/bin "shellcheck-v${version}/shellcheck"
+          url="https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.linux.x86_64.tar.xz"
+          # Downloaded to a file first and retried, rather than piped straight into tar: a
+          # connection reset part way through fed tar a truncated stream and failed the whole
+          # lint run on a commit that had already passed it. That is a network problem being
+          # reported as a code problem.
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/shellcheck.tar.xz "$url"
+          sudo tar -xJf /tmp/shellcheck.tar.xz --strip-components=1 -C /usr/local/bin "shellcheck-v${version}/shellcheck"
           shellcheck --version
       - name: Run ShellCheck
         shell: bash
