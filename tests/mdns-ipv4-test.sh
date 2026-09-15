@@ -55,7 +55,10 @@ run_on () {
   (
     # shellcheck disable=SC1090
     source "$FN"
+    # Both are called by the extracted function, which shellcheck cannot see.
+    # shellcheck disable=SC2329
     setup_progress () { echo "$*" >> "$WORK/progress"; }
+    # shellcheck disable=SC2329
     systemctl () { echo "$*" >> "$RESTARTS"; }
     # Point the function at the fixture instead of /etc.
     eval "$(declare -f configure_mdns_ipv4_only | sed "s|local conf=/etc/avahi/avahi-daemon.conf|local conf=$CONF|")"
@@ -159,7 +162,10 @@ rc=0
 (
   # shellcheck disable=SC1090
   source "$FN"
+  # Both are called by the extracted function, which shellcheck cannot see.
+  # shellcheck disable=SC2329
   setup_progress () { echo "$*" >> "$WORK/progress"; }
+  # shellcheck disable=SC2329
   systemctl () { echo "$*" >> "$RESTARTS"; }
   eval "$(declare -f configure_mdns_ipv4_only | sed "s|local conf=/etc/avahi/avahi-daemon.conf|local conf=$CONF|")"
   configure_mdns_ipv4_only
