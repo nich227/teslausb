@@ -8,17 +8,22 @@ then
 fi
 
 function recentpathfor {
-  recent=${1#*/}
-  filename=${recent##*/}
+  local name=$1
+  filename=${name##*/}
   filedate=${filename:0:10}
-  echo "RecentClips/$filedate/$filename"
+  if [[ $name == EncryptedClips/* ]]
+  then
+    echo "EncryptedClips/RecentClips/$filedate/$filename"
+  else
+    echo "RecentClips/$filedate/$filename"
+  fi
 }
 
 find -L /backingfiles/snapshots/ -type f -name \*.mp4 | sort -r | {
   while read -r path
   do
     name=${path##/*TeslaCam/}
-    if [[ $name == SentryClips/* || $name == SavedClips/* ]]
+    if [[ $name == SentryClips/* || $name == SavedClips/* || $name == EncryptedClips/SentryClips/* || $name == EncryptedClips/SavedClips/* ]]
     then
       if [ ! -L "$BASE/$name" ]
       then
@@ -42,7 +47,7 @@ find -L /backingfiles/snapshots/ -type f -name \*.mp4 | sort -r | {
           ln -sf "$path" "$recentpath"
         fi
       fi
-    elif [[ $name == RecentClips/* ]]
+    elif [[ $name == RecentClips/* || $name == EncryptedClips/RecentClips/* ]]
     then
       recentpath=$BASE/$(recentpathfor "$name")
       if [ ! -L "$recentpath" ]

@@ -397,7 +397,9 @@ function clean_cam_mount {
 
   # delete directories that are now empty
   find "$CAM_MOUNT/TeslaCam/RecentClips" "$CAM_MOUNT/TeslaCam/SavedClips" \
-    "$CAM_MOUNT/TeslaCam/SentryClips" "$CAM_MOUNT/TeslaTrackMode" -mindepth 1 -type d -empty -delete || true
+    "$CAM_MOUNT/TeslaCam/SentryClips" "$CAM_MOUNT/TeslaCam/EncryptedClips/RecentClips" \
+    "$CAM_MOUNT/TeslaCam/EncryptedClips/SavedClips" "$CAM_MOUNT/TeslaCam/EncryptedClips/SentryClips" \
+    "$CAM_MOUNT/TeslaTrackMode" -mindepth 1 -type d -empty -delete || true
 
   # Trim the camera archive to reduce the number of blocks in the snapshot.
   trim_free_space "$CAM_MOUNT"
@@ -421,6 +423,19 @@ function clean_cam_mount {
 #       videos.mp4
 #       event.json
 #       thumb.png
+#   EncryptedClips/
+#     RecentClips/
+#       videos.mp4
+#     SavedClips/
+#       datetime/
+#         videos.mp4
+#         event.json
+#         thumb.png
+#     SentryClips/
+#       datetime/
+#         videos.mp4
+#         event.json
+#         thumb.png
 # TeslaTrackMode/
 #   lapvideo.mp4
 #   laptelemetry.csv
@@ -451,13 +466,13 @@ function archive_teslacam_clips () {
   local -a recentclipsopt
   if [ "${ARCHIVE_SAVEDCLIPS:-true}" = "true" ]
   then
-    savedclipsopt=("-path" "./SavedClips/*")
+    savedclipsopt=("-path" "./SavedClips/*" "-o" "-path" "./EncryptedClips/SavedClips/*")
   else
     savedclipsopt=("-false")
   fi
   if [ "${ARCHIVE_SENTRYCLIPS:-true}" = "true" ]
   then
-    sentryclipsopt=("-o" "-path" "./SentryClips/*")
+    sentryclipsopt=("-o" "-path" "./SentryClips/*" "-o" "-path" "./EncryptedClips/SentryClips/*")
   fi
   if [ "${ARCHIVE_TRACKMODECLIPS:-true}" = "true" ]
   then
@@ -465,7 +480,7 @@ function archive_teslacam_clips () {
   fi
   if [ "${ARCHIVE_RECENTCLIPS:-false}" = "true" ]
   then
-    recentclipsopt=("-o" "-path" "./RecentClips/*")
+    recentclipsopt=("-o" "-path" "./RecentClips/*" "-o" "-path" "./EncryptedClips/RecentClips/*")
   fi
   (cd "$overlaylower"; find . \( \( "${savedclipsopt[@]}" "${sentryclipsopt[@]}" "${trackmodeclipsopt[@]}" "${recentclipsopt[@]}" \) -type l \) \
         -a -fprintf "$sentrylist" '%P\n')
@@ -545,21 +560,30 @@ function archive_teslacam_clips () {
     mkdir -p "${triggerdir}/SentryClips"
     mkdir -p "${triggerdir}/SavedClips"
     mkdir -p "${triggerdir}/RecentClips"
+    mkdir -p "${triggerdir}/EncryptedClips/SentryClips"
+    mkdir -p "${triggerdir}/EncryptedClips/SavedClips"
+    mkdir -p "${triggerdir}/EncryptedClips/RecentClips"
     true > "${triggerlist}"
     if [ -n "${TRIGGER_FILE_SAVED+x}" ]
     then
       touch "${triggerdir}/SavedClips/${TRIGGER_FILE_SAVED}"
       echo "SavedClips/${TRIGGER_FILE_SAVED}" >> "${triggerlist}"
+      touch "${triggerdir}/EncryptedClips/SavedClips/${TRIGGER_FILE_SAVED}"
+      echo "EncryptedClips/SavedClips/${TRIGGER_FILE_SAVED}" >> "${triggerlist}"
     fi
     if [ -n "${TRIGGER_FILE_SENTRY+x}" ]
     then
       touch "${triggerdir}/SentryClips/${TRIGGER_FILE_SENTRY}"
       echo "SentryClips/${TRIGGER_FILE_SENTRY}" >> "${triggerlist}"
+      touch "${triggerdir}/EncryptedClips/SentryClips/${TRIGGER_FILE_SENTRY}"
+      echo "EncryptedClips/SentryClips/${TRIGGER_FILE_SENTRY}" >> "${triggerlist}"
     fi
     if [ -n "${TRIGGER_FILE_RECENT+x}" ]
     then
       touch "${triggerdir}/RecentClips/${TRIGGER_FILE_RECENT}"
       echo "RecentClips/${TRIGGER_FILE_RECENT}" >> "${triggerlist}"
+      touch "${triggerdir}/EncryptedClips/RecentClips/${TRIGGER_FILE_RECENT}"
+      echo "EncryptedClips/RecentClips/${TRIGGER_FILE_RECENT}" >> "${triggerlist}"
     fi
     if [ -n "${TRIGGER_FILE_ANY+x}" ]
     then

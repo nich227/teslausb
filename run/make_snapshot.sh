@@ -26,7 +26,7 @@ function linksnapshotfiletorecents {
   local file=$1
   local curmnt=$2
   local finalmnt=$3
-  local recents=/mutable/TeslaCam/RecentClips
+  local recents=${4:-/mutable/TeslaCam/RecentClips}
 
   filename=${file##/*/}
   if [[ ! "$filename" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}.* ]]
@@ -46,6 +46,10 @@ function make_links_for_snapshot {
   local saved=/mutable/TeslaCam/SavedClips
   local sentry=/mutable/TeslaCam/SentryClips
   local track=/mutable/TeslaCam/TeslaTrackMode
+  local encryptedbase=/mutable/TeslaCam/EncryptedClips
+  local encryptedrecent=$encryptedbase/RecentClips
+  local encryptedsaved=$encryptedbase/SavedClips
+  local encryptedsentry=$encryptedbase/SentryClips
   if [ ! -d $saved ]
   then
     mkdir -p $saved
@@ -53,6 +57,14 @@ function make_links_for_snapshot {
   if [ ! -d $sentry ]
   then
     mkdir -p $sentry
+  fi
+  if [ ! -d $encryptedsaved ]
+  then
+    mkdir -p $encryptedsaved
+  fi
+  if [ ! -d $encryptedsentry ]
+  then
+    mkdir -p $encryptedsentry
   fi
   local curmnt="$1"
   local finalmnt="$2"
@@ -64,6 +76,10 @@ function make_links_for_snapshot {
   do
     #log "linking $f"
     linksnapshotfiletorecents "$f" "$curmnt" "$finalmnt"
+  done
+  for f in "$curmnt/TeslaCam/EncryptedClips/RecentClips/"*
+  do
+    linksnapshotfiletorecents "$f" "$curmnt" "$finalmnt" "$encryptedrecent"
   done
   # also link in any files that were moved to SavedClips
   for f in "$curmnt/TeslaCam/SavedClips"/*/*
@@ -79,6 +95,18 @@ function make_links_for_snapshot {
     fi
     ln -sf "${f/$curmnt/$finalmnt}" "$saved/$eventtime"
   done
+  # and the same for encrypted SavedClips
+  for f in "$curmnt/TeslaCam/EncryptedClips/SavedClips"/*/*
+  do
+    linksnapshotfiletorecents "$f" "$curmnt" "$finalmnt" "$encryptedrecent"
+    local eventfolder=${f%/*}
+    local eventtime=${eventfolder##/*/}
+    if [ ! -d "$encryptedsaved/$eventtime" ]
+    then
+      mkdir -p "$encryptedsaved/$eventtime"
+    fi
+    ln -sf "${f/$curmnt/$finalmnt}" "$encryptedsaved/$eventtime"
+  done
   # and the same for SentryClips
   for f in "$curmnt/TeslaCam/SentryClips/"*/*
   do
@@ -91,6 +119,18 @@ function make_links_for_snapshot {
       mkdir -p "$sentry/$eventtime"
     fi
     ln -sf "${f/$curmnt/$finalmnt}" "$sentry/$eventtime"
+  done
+  # and the same for encrypted SentryClips
+  for f in "$curmnt/TeslaCam/EncryptedClips/SentryClips/"*/*
+  do
+    linksnapshotfiletorecents "$f" "$curmnt" "$finalmnt" "$encryptedrecent"
+    local eventfolder=${f%/*}
+    local eventtime=${eventfolder##/*/}
+    if [ ! -d "$encryptedsentry/$eventtime" ]
+    then
+      mkdir -p "$encryptedsentry/$eventtime"
+    fi
+    ln -sf "${f/$curmnt/$finalmnt}" "$encryptedsentry/$eventtime"
   done
   # and finally the TrackMode files
   for f in "$curmnt/TeslaTrackMode/"*
