@@ -5,7 +5,10 @@ import SpaceBetween from '@cloudscape-design/components/space-between';
 import Select, { SelectProps } from '@cloudscape-design/components/select';
 import Box from '@cloudscape-design/components/box';
 import Alert from '@cloudscape-design/components/alert';
+import Button from '@cloudscape-design/components/button';
 import * as api from '../api';
+import TeslaTokenModal, { getTeslaToken, setTeslaToken } from '../components/TeslaTokenModal';
+import { decryptClip, fetchClipKey, readClipHeader, TokenError } from '../teslaDecrypt';
 import './viewer.css';
 
 const CAMS = ['front', 'left_repeater', 'right_repeater', 'back'] as const;
@@ -139,6 +142,15 @@ export default function Viewer() {
   const [layout, setLayout] = useState('layout-standard');
   const [mapUrl, setMapUrl] = useState('');
   const [loading, setLoading] = useState(true);
+  // Encrypted clips: the token from dashcam.tesla.com, the modal that collects it, and any
+  // reason decryption stopped. Decrypted video lives in blob URLs that are revoked on change.
+  const [teslaToken, setTeslaTokenState] = useState(getTeslaToken);
+  const [tokenModal, setTokenModal] = useState<{ open: boolean; expired: boolean }>({
+    open: false,
+    expired: false,
+  });
+  const [decryptError, setDecryptError] = useState<string | null>(null);
+  const blobUrls = useRef<Record<string, string>>({});
 
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const mapDivRef = useRef<HTMLDivElement>(null);
@@ -245,23 +257,73 @@ export default function Viewer() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // Load a segment's sources
+  // Load a segment's sources. Plain clips are streamed straight from the device. Encrypted
+  // ones are fetched whole, decrypted here in the browser with the key Tesla returns for that
+  // file, and played from a blob URL; the device only ever serves ciphertext.
   useEffect(() => {
     if (!current) return;
+    const encrypted = isEncryptedGroup(group);
+    if (encrypted && !teslaToken) return;
+    let cancelled = false;
     for (const c of CAMS) {
       const v = videoRefs.current[c];
       if (!v) continue;
       const fn = current.cameras[c];
       if (fn) {
         const url = `TeslaCam/${group}/${seqName}/${fn}`;
-        if (!v.src.endsWith(fn)) v.src = url;
+        if (v.src.endsWith(fn) || v.dataset.clip === url) continue;
+        if (!encrypted) {
+          v.src = url;
+          continue;
+        }
+        v.dataset.clip = url;
+        (async () => {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`could not fetch ${fn} (${resp.status})`);
+            const bytes = new Uint8Array(await resp.arrayBuffer());
+            const key = await fetchClipKey(readClipHeader(bytes), teslaToken);
+            const mp4 = await decryptClip(bytes, key);
+            if (cancelled) return;
+            const old = blobUrls.current[c];
+            if (old) URL.revokeObjectURL(old);
+            const blob = URL.createObjectURL(
+              new Blob([mp4.buffer as ArrayBuffer], { type: 'video/mp4' }),
+            );
+            blobUrls.current[c] = blob;
+            v.src = blob;
+            setDecryptError(null);
+          } catch (e) {
+            if (cancelled) return;
+            delete v.dataset.clip;
+            if (e instanceof TokenError) {
+              setTeslaToken('');
+              setTeslaTokenState('');
+              setTokenModal({ open: true, expired: true });
+            } else {
+              setDecryptError(e instanceof Error ? e.message : String(e));
+            }
+          }
+        })();
       } else {
+        delete v.dataset.clip;
         v.removeAttribute('src');
         v.load();
       }
     }
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, group, seqName]);
+  }, [current, group, seqName, teslaToken]);
+
+  // Decrypted video is held in memory as blob URLs; let it go when the viewer is left.
+  useEffect(
+    () => () => {
+      for (const u of Object.values(blobUrls.current)) URL.revokeObjectURL(u);
+    },
+    [],
+  );
 
   // Sentry map from event json
   useEffect(() => {
@@ -423,17 +485,49 @@ export default function Viewer() {
       }
     >
       <SpaceBetween size="m">
-        {group && isEncryptedGroup(group) && (
+        {group && isEncryptedGroup(group) && !teslaToken && (
           // The files keep their .mp4 names but are AES-encrypted containers, so a browser
-          // cannot play them and a blank player would look like a fault. Tesla decrypts them
-          // in the car or at dashcam.tesla.com with the account the car was linked to.
-          <Alert type="info" header="These clips are encrypted">
-            The car saved these with Encrypt Dashcam Recordings turned on, so they cannot be played
-            here. They are archived like any other clip; to watch them, use dashcam.tesla.com with
-            the Tesla account linked to the car, or turn the setting off under Controls, Safety in
-            the car.
+          // cannot play them as they are. With a token from Tesla's own viewer, this page can
+          // fetch the per-clip keys and decrypt locally, exactly as dashcam.tesla.com does.
+          <Alert
+            type="info"
+            header="These clips are encrypted"
+            action={
+              <Button onClick={() => setTokenModal({ open: true, expired: false })}>
+                Play them here
+              </Button>
+            }
+          >
+            The car saved these with Encrypt Dashcam Recordings turned on. They are archived like
+            any other clip. To play them in this viewer, sign in at Tesla&apos;s dashcam site and
+            paste its token; the video is decrypted in your browser and never leaves it.
           </Alert>
         )}
+        {group && isEncryptedGroup(group) && teslaToken && decryptError && (
+          <Alert
+            type="error"
+            header="Could not decrypt this clip"
+            dismissible
+            onDismiss={() => setDecryptError(null)}
+            action={
+              <Button onClick={() => setTokenModal({ open: true, expired: false })}>
+                Change token
+              </Button>
+            }
+          >
+            {decryptError}
+          </Alert>
+        )}
+        <TeslaTokenModal
+          visible={tokenModal.open}
+          expired={tokenModal.expired}
+          onDismiss={() => setTokenModal({ open: false, expired: false })}
+          onSaved={(tok) => {
+            setTeslaTokenState(tok);
+            setDecryptError(null);
+            setTokenModal({ open: false, expired: false });
+          }}
+        />
         <SpaceBetween direction="horizontal" size="xs">
           <Select
             selectedOption={group ? { value: group, label: groupLabel(group) } : null}

@@ -2232,6 +2232,51 @@ assert_grep "tmpfs /var/log/nginx tmpfs nodev,nosuid,nofail" "$REPO/setup/pi/con
 assert_grep "tmpfs /var/lib/nginx tmpfs nodev,nosuid,nofail" "$REPO/setup/pi/configure-web.sh" \
   "so does the cache tmpfs"
 
+
+start_case "nginx's tmpfs mounts have an explicit mode, so the master can reopen its log"
+# Without a mode a tmpfs mounts 1777. Debian's fs.protected_regular=2 then forbids opening
+# for write a file in it that you do not own, root included. nginx's master is root and its
+# workers are www-data, so once a worker had created error.log the master could not open it,
+# every reload and every "nginx -t" failed, and systemctl reported the reload a success while
+# the old configuration kept running. Found because a configuration change would not take.
+assert_grep "tmpfs /var/log/nginx tmpfs nodev,nosuid,nofail,mode=0755 0 0" "$REPO/setup/pi/configure-web.sh" \
+  "the log tmpfs is mounted 0755"
+assert_grep "tmpfs /var/lib/nginx tmpfs nodev,nosuid,nofail,mode=0755 0 0" "$REPO/setup/pi/configure-web.sh" \
+  "and so is the cache tmpfs"
+assert_grep "protected_regular" "$REPO/setup/pi/configure-web.sh" "with the reason recorded beside it"
+
+start_case "encrypted clips: the viewer's key request is forwarded to Tesla from the same origin"
+# Tesla's decrypt endpoint sends no CORS headers, so a browser on the device's origin cannot
+# call it. nginx forwards one path to it. Only that path, only POST, and only a small body:
+# the video is fetched from /TeslaCam/ as usual and decrypted in the browser.
+nginx_conf="$REPO/teslausb-www/teslausb.nginx"
+assert_grep "location = /tesla/decrypt {" "$nginx_conf" "an exact-match location for the one request"
+assert_grep "proxy_pass https://dashcam.tesla.com/api/1/decrypt/batch;" "$nginx_conf" "forwarded to Tesla's batch endpoint"
+assert_grep "proxy_http_version 1.1;" "$nginx_conf" "over HTTP/1.1, which Tesla requires (426 otherwise)"
+assert_grep "proxy_ssl_server_name on;" "$nginx_conf" "with SNI, so the TLS handshake names the right host"
+assert_grep "limit_except POST { deny all; }" "$nginx_conf" "POST only"
+assert_grep "client_max_body_size 64k;" "$nginx_conf" "and a body limit far below any video"
+assert_grep "proxy_hide_header Set-Cookie;" "$nginx_conf" "Tesla's cookies are not passed back to the browser"
+# the config parses; fancyindex is a module the stock image lacks, so it is stubbed
+if command -v nginx > /dev/null
+then
+  sed '/fancyindex/d' "$nginx_conf" > /tmp/nginx-check.conf
+  mkdir -p /tmp/nginx-check/www && : > /tmp/nginx-check/htpasswd
+  sed -i "s|/var/www/html|/tmp/nginx-check/www|g; s|/etc/nginx/.htpasswd|/tmp/nginx-check/htpasswd|g" /tmp/nginx-check.conf
+  printf 'events {}\nhttp { include /tmp/nginx-check.conf; }\n' > /tmp/nginx-check-main.conf
+  if nginx -t -c /tmp/nginx-check-main.conf -e /dev/null > /dev/null 2>&1
+  then ok "nginx accepts the configuration"
+  else not_ok "nginx accepts the configuration ($(nginx -t -c /tmp/nginx-check-main.conf 2>&1 | grep -m1 emerg))"
+  fi
+  rm -rf /tmp/nginx-check /tmp/nginx-check.conf /tmp/nginx-check-main.conf
+else
+  note "nginx not installed in this container, config parse skipped"
+fi
+# and the browser side posts to that same-origin path, never to Tesla directly
+assert_grep "export const DECRYPT_URL = 'tesla/decrypt';" "$REPO/teslausb-www/ui/src/teslaDecrypt.ts" \
+  "the viewer posts to the proxied path"
+assert_no_grep "fetch(\`\${TESLA_DASHCAM_URL}" "$REPO/teslausb-www/ui/src/teslaDecrypt.ts" \
+  "and never fetches Tesla's origin directly, which the browser would block"
 start_case "the log mount point is recreated once DietPi-RAMlog is gone"
 # configure-web.sh makes /var/log/nginx while RAMlog still has a tmpfs on /var/log, so
 # the directory goes when RAMlog does. It has to be made again while the root
