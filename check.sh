@@ -34,6 +34,7 @@ shellcheck --exclude=SC1091 \
            ./run/teslausb-url.sh \
            ./tests/integration-test.sh \
            ./tests/run-integration-tests.sh \
+           ./tests/device-conformance.sh \
            ./tests/coverage.sh \
            ./tools/prepare-boot-partition.sh \
            ./tests/vm/run-vm-test.sh \
