@@ -16,9 +16,17 @@ setup_progress "configuring nginx"
 # no network, no ssh, and with no keyboard, no way in. So the mount point is created
 # again after RAMlog goes, in make-root-fs-readonly.sh, and both entries carry
 # nofail so that a missing mount point can never do that again.
+#
+# The log tmpfs needs an explicit mode. Without one it mounts 1777, world writable and
+# sticky, and Debian sets fs.protected_regular=2, which forbids opening for write a file in
+# such a directory that you do not own, root included. nginx's master runs as root and its
+# workers as www-data, so once a worker has created error.log the master can no longer open
+# it, and every reload and every "nginx -t" fails on that alone. A failed reload keeps the
+# old configuration running while systemctl reports success, so configuration changes made
+# by an upgrade were silently not taking effect until the next reboot.
 sed -i "/.*\/nginx tmpfs.*/d" /etc/fstab
-echo "tmpfs /var/log/nginx tmpfs nodev,nosuid,nofail 0 0" >> /etc/fstab
-echo "tmpfs /var/lib/nginx tmpfs nodev,nosuid,nofail 0 0" >> /etc/fstab
+echo "tmpfs /var/log/nginx tmpfs nodev,nosuid,nofail,mode=0755 0 0" >> /etc/fstab
+echo "tmpfs /var/lib/nginx tmpfs nodev,nosuid,nofail,mode=0755 0 0" >> /etc/fstab
 mkdir -p /var/log/nginx
 mkdir -p /var/lib/nginx
 mount /var/log/nginx
