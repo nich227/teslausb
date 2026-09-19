@@ -4,9 +4,14 @@
 
 mount /mnt/cam || true
 
-mkdir -p /mnt/cam/TeslaCam/SentryClips
+# One event in the classic tree and one in the encrypted tree recent Tesla software also
+# writes, so a bench test exercises both. The "encrypted" files are the same dummy data; only
+# the layout is being tested, since the real ones are AES containers only Tesla can decrypt.
+for tree in TeslaCam/SentryClips TeslaCam/EncryptedClips/SentryClips
+do
+mkdir -p "/mnt/cam/$tree"
 
-cd /mnt/cam/TeslaCam/SentryClips
+cd "/mnt/cam/$tree"
 
 dir=$(date '+%Y-%m-%d_%H-%M-%S')
 mkdir "$dir"
@@ -35,3 +40,4 @@ cat << EOF > event.json
 	"reason":"dummy_test_event"
 }
 EOF
+done

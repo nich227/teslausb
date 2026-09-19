@@ -1352,6 +1352,166 @@ run_bootstrap
 assert_file /boot/teslausb-headless-setup.log "wrote the headless setup log"
 
 # ===========================================================================
+banner "EncryptedClips: the second tree recent Tesla software writes"
+
+# Recent Tesla software records into TeslaCam/EncryptedClips/{Recent,Saved,Sentry}Clips as
+# well as the classic three folders. Until the archive code knew about it, everything the car
+# put there was never archived and never cleaned up, and with --remove-source-files never
+# touching the folder it would quietly fill the cam disk. No car here writes it yet, so this
+# builds the tree Tesla documents and pushes it through the same code paths a real one takes:
+# the snapshot linking in make_snapshot.sh, then the find that archiveloop builds its archive
+# list from, taken verbatim from archiveloop so the two cannot drift apart.
+
+enc_env () {
+  rm -rf /tmp/enc
+  mkdir -p /tmp/enc/snap/TeslaCam /tmp/enc/mutable/TeslaCam
+  # the shape of a cam disk: classic and encrypted, each with an event holding two clips
+  local base
+  for base in "" "EncryptedClips/"
+  do
+    mkdir -p "/tmp/enc/snap/TeslaCam/${base}RecentClips" \
+             "/tmp/enc/snap/TeslaCam/${base}SavedClips/2026-09-18_10-00-00" \
+             "/tmp/enc/snap/TeslaCam/${base}SentryClips/2026-09-18_11-00-00"
+    echo clip > "/tmp/enc/snap/TeslaCam/${base}RecentClips/2026-09-18_09-59-00-front.mp4"
+    echo clip > "/tmp/enc/snap/TeslaCam/${base}SavedClips/2026-09-18_10-00-00/2026-09-18_09-59-00-front.mp4"
+    echo '{}' > "/tmp/enc/snap/TeslaCam/${base}SavedClips/2026-09-18_10-00-00/event.json"
+    echo clip > "/tmp/enc/snap/TeslaCam/${base}SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4"
+    echo '{}' > "/tmp/enc/snap/TeslaCam/${base}SentryClips/2026-09-18_11-00-00/event.json"
+  done
+}
+
+# make_snapshot.sh's two linking functions, lifted out because the script refuses to be
+# sourced and takes a lock on the real snapshots directory when run. /mutable is redirected
+# into the fixture.
+run_snapshot_links () {
+  {
+    echo 'log () { :; }'
+    sed -n '/^function linksnapshotfiletorecents {$/,/^}$/p' "$REPO/run/make_snapshot.sh"
+    sed -n '/^function make_links_for_snapshot {$/,/^}$/p' "$REPO/run/make_snapshot.sh"
+  } | sed 's|/mutable/TeslaCam|/tmp/enc/mutable/TeslaCam|g' > /tmp/enc/links.sh
+  # shellcheck disable=SC1091
+  ( source /tmp/enc/links.sh && make_links_for_snapshot /tmp/enc/snap /tmp/enc/final ) \
+    > /tmp/enc/snapshot.log 2>&1
+  return 0
+}
+
+# archiveloop's archive-list find, lifted from archive_teslacam_clips with its variables
+run_archive_find () {
+  local -a savedclipsopt sentryclipsopt trackmodeclipsopt recentclipsopt
+  savedclipsopt=("-path" "./SavedClips/*" "-o" "-path" "./EncryptedClips/SavedClips/*")
+  sentryclipsopt=("-o" "-path" "./SentryClips/*" "-o" "-path" "./EncryptedClips/SentryClips/*")
+  trackmodeclipsopt=("-o" "-path" "./TeslaTrackMode/*")
+  if [ "${1:-false}" = "true" ]
+  then
+    recentclipsopt=("-o" "-path" "./RecentClips/*" "-o" "-path" "./EncryptedClips/RecentClips/*")
+  fi
+  (cd /tmp/enc/mutable/TeslaCam && find . \( \( "${savedclipsopt[@]}" "${sentryclipsopt[@]}" \
+    "${trackmodeclipsopt[@]}" "${recentclipsopt[@]}" \) -type l \) -a -fprintf /tmp/enc/sentry_files '%P\n')
+  sort -o /tmp/enc/sentry_files /tmp/enc/sentry_files
+}
+
+# The links point at the snapshot's eventual mount, which does not exist yet when they are
+# made, so they dangle by design: test for the link, not for what it points at.
+assert_link () {
+  if [ -L "$1" ]
+  then ok "$2"
+  else not_ok "$2 (no symlink at $1)"
+  fi
+}
+
+start_case "snapshot links are made for the encrypted tree, mirroring the classic one"
+enc_env
+run_snapshot_links
+assert_link /tmp/enc/mutable/TeslaCam/EncryptedClips/SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4 \
+  "an encrypted Sentry clip is linked into its event folder"
+assert_link /tmp/enc/mutable/TeslaCam/EncryptedClips/SavedClips/2026-09-18_10-00-00/2026-09-18_09-59-00-front.mp4 \
+  "and an encrypted Saved clip"
+assert_link /tmp/enc/mutable/TeslaCam/EncryptedClips/RecentClips/2026-09-18/2026-09-18_09-59-00-front.mp4 \
+  "and an encrypted Recent clip goes into its day folder"
+assert_link /tmp/enc/mutable/TeslaCam/SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4 \
+  "while the classic tree is linked as before"
+if [ -L /tmp/enc/mutable/TeslaCam/EncryptedClips/SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4 ]
+then
+  target=$(readlink /tmp/enc/mutable/TeslaCam/EncryptedClips/SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4)
+  assert_equals "/tmp/enc/final/TeslaCam/EncryptedClips/SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4" \
+    "$target" "the link points at the final mount, not the temporary one"
+else
+  not_ok "the encrypted Sentry link is a symlink"
+fi
+
+start_case "the archive list includes the encrypted clips"
+run_archive_find false
+assert_grep "^EncryptedClips/SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4$" /tmp/enc/sentry_files \
+  "an encrypted Sentry clip is queued for archiving"
+assert_grep "^EncryptedClips/SentryClips/2026-09-18_11-00-00/event.json$" /tmp/enc/sentry_files \
+  "along with its event.json"
+assert_grep "^EncryptedClips/SavedClips/2026-09-18_10-00-00/2026-09-18_09-59-00-front.mp4$" /tmp/enc/sentry_files \
+  "and an encrypted Saved clip"
+assert_grep "^SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4$" /tmp/enc/sentry_files \
+  "with the classic clips still there"
+assert_no_grep "RecentClips/" /tmp/enc/sentry_files \
+  "and no Recent clips of either kind, since ARCHIVE_RECENTCLIPS is off by default"
+
+start_case "ARCHIVE_RECENTCLIPS brings in both kinds of recent clip"
+run_archive_find true
+assert_grep "^EncryptedClips/RecentClips/2026-09-18/2026-09-18_09-59-00-front.mp4$" /tmp/enc/sentry_files \
+  "the encrypted Recent clip is queued"
+assert_grep "^RecentClips/2026-09-18/2026-09-18_09-59-00-front.mp4$" /tmp/enc/sentry_files "as is the classic one"
+
+start_case "a car that does not write EncryptedClips is unaffected"
+rm -rf /tmp/enc/snap/TeslaCam/EncryptedClips /tmp/enc/mutable/TeslaCam
+mkdir -p /tmp/enc/mutable/TeslaCam
+run_snapshot_links
+run_archive_find false
+assert_equals "0" "$(grep -c EncryptedClips /tmp/enc/sentry_files)" "nothing encrypted is listed"
+assert_grep "^SentryClips/2026-09-18_11-00-00/2026-09-18_10-59-00-front.mp4$" /tmp/enc/sentry_files \
+  "the classic clips are still found"
+assert_no_grep "No such file" /tmp/enc/snapshot.log "and the missing folder produces no errors"
+
+start_case "the trigger files are placed in the encrypted folders too"
+# archiveloop drops marker files into each folder it archives so the far end can react;
+# the encrypted folders are part of what gets archived now, so they get them as well.
+# The patterns below are the literal source text, variables and all.
+# shellcheck disable=SC2016
+assert_grep 'mkdir -p "${triggerdir}/EncryptedClips/SentryClips"' "$REPO/run/archiveloop" \
+  "a trigger directory is made for encrypted Sentry"
+# shellcheck disable=SC2016
+assert_grep 'echo "EncryptedClips/SavedClips/${TRIGGER_FILE_SAVED}" >> "${triggerlist}"' "$REPO/run/archiveloop" \
+  "and the Saved trigger is written into the encrypted folder as well as the classic one"
+
+start_case "empty encrypted event folders are cleaned up with the rest"
+# shellcheck disable=SC2016
+assert_grep '"\$CAM_MOUNT/TeslaCam/EncryptedClips/SentryClips"' "$REPO/run/archiveloop" \
+  "the empty-directory sweep covers the encrypted tree"
+
+start_case "the dashboard folds encrypted usage into the category it belongs to"
+# An encrypted Sentry event is still a Sentry event. Rather than a fourth slice, each
+# encrypted folder is summed into its category, so the pie means the same thing whichever
+# way the car is writing.
+rm -rf /tmp/cu && mkdir -p /tmp/cu/SentryClips/e1 /tmp/cu/EncryptedClips/SentryClips/e2 /tmp/cu/RecentClips
+head -c 3000 /dev/zero > /tmp/cu/SentryClips/e1/a.mp4
+head -c 5000 /dev/zero > /tmp/cu/EncryptedClips/SentryClips/e2/b.mp4
+head -c 700 /dev/zero > /tmp/cu/RecentClips/c.mp4
+sed -e 's|^SRC=.*|SRC=/tmp/cu|' -e 's|^CACHE=.*|CACHE=/tmp/cu.json|' -e 's|^LOCK=.*|LOCK=/tmp/cu.lock|' \
+    -e 's|sudo du|du|g' "$REPO/teslausb-www/html/cgi-bin/camusage.sh" > /tmp/cu.sh
+rm -f /tmp/cu.json
+usage_json=$(bash /tmp/cu.sh | tail -1)
+sentry=$(printf '%s' "$usage_json" | sed -n 's/.*"SentryClips":\([0-9]*\).*/\1/p')
+recent=$(printf '%s' "$usage_json" | sed -n 's/.*"RecentClips":\([0-9]*\).*/\1/p')
+saved=$(printf '%s' "$usage_json" | sed -n 's/.*"SavedClips":\([0-9]*\).*/\1/p')
+# du counts directory blocks too, so compare against the same measurement of the folder
+# alone rather than against the file size
+recent_alone=$(du -sbL /tmp/cu/RecentClips | cut -f1)
+assert_equals "$recent_alone" "$recent" \
+  "Recent usage is unaffected by an encrypted folder that does not exist"
+sentry_alone=$(( $(du -sbL /tmp/cu/SentryClips | cut -f1) + $(du -sbL /tmp/cu/EncryptedClips/SentryClips | cut -f1) ))
+assert_equals "$sentry_alone" "$sentry" "and Sentry is exactly the sum of its two folders"
+assert_equals "0" "$saved" "a category with neither folder reports zero rather than failing"
+assert_equals "3" "$(printf '%s' "$usage_json" | grep -o '"[A-Za-z]*Clips"' | wc -l)" \
+  "and the JSON still has exactly the three keys the dashboard expects"
+
+rm -rf /tmp/enc /tmp/cu /tmp/cu.sh /tmp/cu.json /tmp/cu.lock
+
 banner "rsync archiving: the path on the far end"
 
 # rsync 3.2.4 protects args by default, so the remote path is no longer parsed by a shell

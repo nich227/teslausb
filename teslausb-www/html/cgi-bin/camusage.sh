@@ -9,6 +9,10 @@
 #    instantly; a stale cache is returned immediately and refreshed in the
 #    background (stale-while-revalidate), so the pie only ever blocks on the very
 #    first run after boot.
+#  - Recent Tesla software also writes to TeslaCam/EncryptedClips/{Recent,Saved,Sentry}Clips.
+#    An encrypted Sentry event is still a Sentry event, so each encrypted folder is summed
+#    into the category it belongs to rather than shown as a fourth slice, and the pie keeps
+#    meaning the same thing whichever way the car happens to be writing.
 CACHE=/tmp/camusage.json
 LOCK=/tmp/camusage.lock
 SRC=/mutable/TeslaCam
@@ -23,12 +27,15 @@ $1
 HDR
 }
 
+# du over the plain and the encrypted folder of one category, missing ones ignored.
+usage() {
+  local n
+  n=$(sudo du -sbL "$SRC/$1" "$SRC/EncryptedClips/$1" 2>/dev/null | awk '{s+=$1} END {print s+0}')
+  echo "${n:-0}"
+}
 compute() {
-  local r s v
-  r=$(sudo du -sbL "$SRC/RecentClips" 2>/dev/null | cut -f1)
-  s=$(sudo du -sbL "$SRC/SentryClips" 2>/dev/null | cut -f1)
-  v=$(sudo du -sbL "$SRC/SavedClips" 2>/dev/null | cut -f1)
-  printf '{"RecentClips":%s,"SentryClips":%s,"SavedClips":%s}' "${r:-0}" "${s:-0}" "${v:-0}"
+  printf '{"RecentClips":%s,"SentryClips":%s,"SavedClips":%s}' \
+    "$(usage RecentClips)" "$(usage SentryClips)" "$(usage SavedClips)"
 }
 
 if [ -f "$CACHE" ]; then
@@ -42,10 +49,8 @@ if [ -f "$CACHE" ]; then
     setsid bash -c '
       exec 9>"'"$LOCK"'"
       flock -n 9 || exit 0
-      r=$(sudo du -sbL "'"$SRC"'/RecentClips" 2>/dev/null | cut -f1)
-      s=$(sudo du -sbL "'"$SRC"'/SentryClips" 2>/dev/null | cut -f1)
-      v=$(sudo du -sbL "'"$SRC"'/SavedClips" 2>/dev/null | cut -f1)
-      printf "{\"RecentClips\":%s,\"SentryClips\":%s,\"SavedClips\":%s}" "${r:-0}" "${s:-0}" "${v:-0}" > "'"$CACHE"'.tmp"
+      usage() { sudo du -sbL "'"$SRC"'/$1" "'"$SRC"'/EncryptedClips/$1" 2>/dev/null | awk "{s+=\$1} END {print s+0}"; }
+      printf "{\"RecentClips\":%s,\"SentryClips\":%s,\"SavedClips\":%s}" "$(usage RecentClips)" "$(usage SentryClips)" "$(usage SavedClips)" > "'"$CACHE"'.tmp"
       mv "'"$CACHE"'.tmp" "'"$CACHE"'"
     ' >/dev/null 2>&1 </dev/null &
   fi

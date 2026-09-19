@@ -4,6 +4,7 @@ import Header from '@cloudscape-design/components/header';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import Select, { SelectProps } from '@cloudscape-design/components/select';
 import Box from '@cloudscape-design/components/box';
+import Alert from '@cloudscape-design/components/alert';
 import * as api from '../api';
 import './viewer.css';
 
@@ -12,7 +13,33 @@ type Cam = (typeof CAMS)[number] | 'left_pillar' | 'right_pillar';
 type Segment = { ts: string; cameras: Partial<Record<Cam, string>> };
 type Groups = Record<string, Record<string, Segment[]>>;
 
-const GROUP_ORDER = ['RecentClips', 'SavedClips', 'SentryClips'];
+// Recent Tesla software also writes under EncryptedClips/, one level deeper. The group is
+// the whole path prefix, so it drops straight into the TeslaCam/<group>/<seq>/<file> URLs
+// below, and only the label shown to the user is prettied up.
+const GROUP_ORDER = [
+  'RecentClips',
+  'SavedClips',
+  'SentryClips',
+  'EncryptedClips/RecentClips',
+  'EncryptedClips/SavedClips',
+  'EncryptedClips/SentryClips',
+];
+export const isEncryptedGroup = (g: string) => g.startsWith('EncryptedClips/');
+export const groupLabel = (g: string) =>
+  isEncryptedGroup(g) ? `${g.slice('EncryptedClips/'.length)} (encrypted)` : g;
+
+// Splits a videolist line into its group, event and file. The last two parts are always
+// <seq>/<file>; whatever precedes them is the group, which is one level for the classic
+// folders and two for the encrypted ones. Returns null for anything too short to be a clip.
+export function splitClipPath(line: string): { grp: string; seq: string; filename: string } | null {
+  const parts = line.split('/');
+  if (parts.length < 3) return null;
+  return {
+    filename: parts[parts.length - 1],
+    seq: parts[parts.length - 2],
+    grp: parts.slice(0, -2).join('/'),
+  };
+}
 const SEG_MS = 60000;
 
 // Bootstrap Icons (MIT) inlined as SVG paths so we don't ship a webfont to the Pi.
@@ -130,7 +157,9 @@ export default function Viewer() {
       const jsons: Record<string, string> = {};
       const segMap: Record<string, Record<string, Map<string, Segment>>> = {};
       for (const line of lines) {
-        const [grp, seq, filename] = line.split('/');
+        const split = splitClipPath(line);
+        if (!split) continue;
+        const { grp, seq, filename } = split;
         if (!filename || filename.includes('~')) continue;
         if (filename.includes('json')) {
           jsons[`${grp}/${seq}`] = `${grp}/${seq}/${filename}`;
@@ -370,7 +399,7 @@ export default function Viewer() {
 
   const groupOptions: SelectProps.Option[] = Object.keys(groups)
     .sort((a, b) => GROUP_ORDER.indexOf(a) - GROUP_ORDER.indexOf(b))
-    .map((g) => ({ value: g, label: g }));
+    .map((g) => ({ value: g, label: groupLabel(g) }));
   const seqOptions: SelectProps.Option[] = group
     ? Object.keys(groups[group] || {})
         .sort()
@@ -394,9 +423,20 @@ export default function Viewer() {
       }
     >
       <SpaceBetween size="m">
+        {group && isEncryptedGroup(group) && (
+          // The files keep their .mp4 names but are AES-encrypted containers, so a browser
+          // cannot play them and a blank player would look like a fault. Tesla decrypts them
+          // in the car or at dashcam.tesla.com with the account the car was linked to.
+          <Alert type="info" header="These clips are encrypted">
+            The car saved these with Encrypt Dashcam Recordings turned on, so they cannot be played
+            here. They are archived like any other clip; to watch them, use dashcam.tesla.com with
+            the Tesla account linked to the car, or turn the setting off under Controls, Safety in
+            the car.
+          </Alert>
+        )}
         <SpaceBetween direction="horizontal" size="xs">
           <Select
-            selectedOption={group ? { value: group, label: group } : null}
+            selectedOption={group ? { value: group, label: groupLabel(group) } : null}
             onChange={(e) => {
               const g = e.detail.selectedOption.value!;
               const seqs = Object.keys(groups[g] || {})
