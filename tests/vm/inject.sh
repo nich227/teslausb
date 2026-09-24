@@ -27,7 +27,7 @@ readonly STAGING=/tmp/boot-staging
 log () { printf '    [inject] %s\n' "$*"; }
 
 apt-get -qq update > /dev/null
-apt-get -qq install -y --no-install-recommends xz-utils e2fsprogs fdisk > /dev/null
+apt-get -qq install -y --no-install-recommends xz-utils e2fsprogs fdisk git > /dev/null
 
 log "decompressing $IMAGE_NAME"
 xz -dc "/cache/$IMAGE_NAME" > "$WORK"
@@ -187,13 +187,25 @@ if [ "${TESLAUSB_BOOTSTRAP:-1}" = 1 ]
 then
 log "staging the working tree for an offline install"
 debugfs -w -R "mkdir /boot/teslausb-local" "$PART" &> /dev/null || true
-# Everything, not a hand-picked list. Naming the directories individually left
-# teslausb-www out, so configure-web.sh had nothing to copy into the webroot and
-# setup died there under set -e. The web UI's build output lives in
-# teslausb-www/html and is what the device actually serves.
-tar -cf /tmp/repo.tar -C /repo \
-  --exclude=.git --exclude=node_modules --exclude='._*' --exclude='*.qcow2' \
-  . 2> /dev/null
+# Every tracked file, not a hand-picked list. Naming the directories individually left
+# teslausb-www out, so configure-web.sh had nothing to copy into the webroot and setup
+# died there under set -e. The web UI's build output lives in teslausb-www/html and is
+# what the device actually serves.
+#
+# Tracked files rather than the whole directory, though: a plain tar of "." also picks
+# up whatever is lying around untracked and ignored. Two release images built into the
+# repository root, 433MB of them, were shipped to a device with a 3GB root, landed
+# there twice (the archive and its extraction), and left apt no room to rebuild the
+# initramfs. Setup stopped at its first package install and the lab sat waiting for a
+# finish that could never come. The working tree is used, not HEAD, so a lab run tests
+# what is being edited rather than the last commit.
+git config --global --add safe.directory /repo
+(cd /repo && git ls-files -z 2> /dev/null) | tar -cf /tmp/repo.tar -C /repo --null -T - 2> /dev/null
+if [ ! -s /tmp/repo.tar ]
+then
+  echo "could not list the tracked files; is /repo a git checkout?" >&2
+  exit 1
+fi
 for f in /repo/setup/pi/first-boot.sh /repo/setup/pi/teslausb-setup.service /tmp/repo.tar
 do
   debugfs -w -R "rm /boot/teslausb-local/$(basename "$f")" "$PART" &> /dev/null || true
