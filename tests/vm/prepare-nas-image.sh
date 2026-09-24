@@ -62,26 +62,44 @@ mkdir -p "$CACHE_DIR"
 base="$CACHE_DIR/$BASE_IMAGE_NAME"
 
 # ---------------------------------------------------------------------------
-# The base image, fetched once and kept.
+# The base image, cached, and refreshed when Debian publishes a new one.
+#
+# This is the "latest" image, so its published checksum changes every time Debian
+# rebuilds it, roughly monthly. A cached copy from before a rebuild is not corrupt,
+# it is superseded, and the right response is to fetch the new one rather than
+# refuse to run: a lab that had passed for days failed on every variant the morning
+# Debian rotated the image, with nothing in this repository having changed. A
+# download that then still fails the checksum is a real problem and is fatal.
 # ---------------------------------------------------------------------------
-if [ ! -s "$base" ]
-then
+fetch_base () {
   log "fetching $BASE_IMAGE_NAME"
-  curl -fsSL -o "$base.part" "$BASE_URL/$BASE_IMAGE_NAME"
+  curl -fsSL --retry 3 -o "$base.part" "$BASE_URL/$BASE_IMAGE_NAME"
   mv "$base.part" "$base"
-fi
+}
+
+published_sha512 () {
+  curl -fsSL --retry 3 -o "$CACHE_DIR/SHA512SUMS" "$BASE_URL/SHA512SUMS"
+  awk -v n="$BASE_IMAGE_NAME" '$2 == n {print $1}' "$CACHE_DIR/SHA512SUMS"
+}
+
+[ -s "$base" ] || fetch_base
 
 log "verifying sha512"
-curl -fsSL -o "$CACHE_DIR/SHA512SUMS" "$BASE_URL/SHA512SUMS"
-expected=$(awk -v n="$BASE_IMAGE_NAME" '$2 == n {print $1}' "$CACHE_DIR/SHA512SUMS")
-actual=$(sha512sum "$base" | awk '{print $1}')
+expected=$(published_sha512)
 if [ -z "$expected" ]
 then
   log "WARNING: no published checksum for $BASE_IMAGE_NAME, continuing"
-elif [ "$expected" != "$actual" ]
+elif [ "$expected" != "$(sha512sum "$base" | awk '{print $1}')" ]
 then
-  echo "FATAL: $base does not match the published sha512" >&2
-  exit 1
+  log "cached $BASE_IMAGE_NAME no longer matches the published checksum: Debian has"
+  log "released a new image, fetching it"
+  rm -f "$base"
+  fetch_base
+  if [ "$expected" != "$(sha512sum "$base" | awk '{print $1}')" ]
+  then
+    echo "FATAL: freshly downloaded $base does not match the published sha512" >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
