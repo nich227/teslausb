@@ -119,9 +119,40 @@ function remove_dietpi_ramlog () {
   mkdir -p /var/log
 }
 
+# The journal is what tells you why a device rebooted, and on a read-only root it is kept
+# in RAM and gone the moment power drops, which is exactly when it was needed. A device that
+# went dark for seven hours left nothing behind but archiveloop's own log, and only because
+# that one writes to /mutable.
+#
+# So journald is pointed at /mutable, the persistent partition, bound to /var/log/journal so
+# the paths systemd expects stay the same. It is capped well below the partition's size and
+# told to keep synchronous writes to a minimum: a car device loses power without warning
+# many times a day, and the journal must not turn each of those into a filesystem repair or
+# crowd out the archive state that lives beside it. Storage=persistent rather than auto,
+# because auto only persists when the directory already exists at boot, and the bind mount
+# is what creates it.
+function persist_journal_to_mutable () {
+  log_progress "Keeping the systemd journal on /mutable so it survives a reboot"
+  mkdir -p /mutable/journal /var/log/journal
+  if ! grep -q '[[:blank:]]/var/log/journal[[:blank:]]' /etc/fstab
+  then
+    echo "/mutable/journal /var/log/journal none bind,nofail,x-systemd.requires=/mutable 0 0" >> /etc/fstab
+  fi
+  mkdir -p /etc/systemd/journald.conf.d
+  cat << 'EOF' > /etc/systemd/journald.conf.d/teslausb.conf
+[Journal]
+Storage=persistent
+SystemMaxUse=32M
+SystemMaxFileSize=8M
+SyncIntervalSec=60s
+Compress=yes
+EOF
+}
+
 remove_dietpi_ramlog
 restore_nginx_log_mountpoint
 disable_dietpi_ramlog_units
+persist_journal_to_mutable
 
 # adb service exists on some distributions and interferes with mass storage emulation
 systemctl disable amlogic-adbd &> /dev/null || true

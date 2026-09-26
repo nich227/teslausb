@@ -2316,6 +2316,55 @@ assert_eq "$([ -d /tmp/varlog/nginx ] && echo yes || echo no)" no \
   "and creates nothing when fstab has no such mount"
 [ -f /tmp/fstab.real ] && cp /tmp/fstab.real /etc/fstab
 
+start_case "the systemd journal is kept on /mutable, so a reboot does not erase it"
+# On a read-only root the journal lives in RAM and vanishes with the power, which is exactly
+# when it was needed: a device that went dark for seven hours left nothing to read but
+# archiveloop's log. The function binds a directory on the persistent partition over
+# /var/log/journal and caps it, since the partition is small and shared with archive state.
+journal_fn=$(sed -n '/^function persist_journal_to_mutable/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh")
+rm -rf /tmp/jm && mkdir -p /tmp/jm/mutable /tmp/jm/varlog /tmp/jm/etc/systemd
+cp /etc/fstab /tmp/fstab.real 2>/dev/null || true
+: > /etc/fstab
+: > /tmp/journal.progress
+( # shellcheck disable=SC2329
+  log_progress () { echo "$*" >> /tmp/journal.progress; }
+  fn=${journal_fn//\/mutable\/journal//tmp/jm/mutable/journal}
+  fn=${fn//\/var\/log\/journal//tmp/jm/varlog/journal}
+  fn=${fn//\/etc\/systemd\/journald.conf.d//tmp/jm/etc/systemd/journald.conf.d}
+  eval "$fn"
+  persist_journal_to_mutable
+) && JOURNAL_RC=0 || JOURNAL_RC=$?
+assert_eq "$JOURNAL_RC" 0 "exits 0"
+assert_eq "$([ -d /tmp/jm/mutable/journal ] && echo yes)" yes "the directory on /mutable is created"
+assert_eq "$([ -d /tmp/jm/varlog/journal ] && echo yes)" yes "and the mount point under /var/log"
+assert_grep "^/tmp/jm/mutable/journal /tmp/jm/varlog/journal none bind,nofail,x-systemd.requires=/mutable 0 0$" /etc/fstab \
+  "a bind mount ties them together, with nofail so a missing /mutable cannot stop the boot"
+conf=/tmp/jm/etc/systemd/journald.conf.d/teslausb.conf
+assert_file "$conf" "a journald drop-in is written"
+assert_grep "^Storage=persistent$" "$conf" "journald is told to persist, not merely to use a directory if present"
+assert_grep "^SystemMaxUse=32M$" "$conf" "capped far below the partition's size"
+assert_grep "^SystemMaxFileSize=8M$" "$conf" "in files small enough to rotate often"
+assert_grep "^SyncIntervalSec=60s$" "$conf" "with infrequent syncs, since power drops many times a day"
+assert_grep "^Compress=yes$" "$conf" "and compressed"
+assert_grep "survives a reboot" /tmp/journal.progress "and says what it is doing"
+
+start_case "running it again changes nothing"
+( # shellcheck disable=SC2329
+  log_progress () { :; }
+  fn=${journal_fn//\/mutable\/journal//tmp/jm/mutable/journal}
+  fn=${fn//\/var\/log\/journal//tmp/jm/varlog/journal}
+  fn=${fn//\/etc\/systemd\/journald.conf.d//tmp/jm/etc/systemd/journald.conf.d}
+  eval "$fn"
+  persist_journal_to_mutable
+)
+assert_eq "$(grep -c 'journal' /etc/fstab)" 1 "the fstab entry is not duplicated"
+assert_eq "$(grep -c '^Storage=' "$conf")" 1 "nor the drop-in"
+
+start_case "the readonly script calls it alongside the other log fixes"
+assert_grep "^persist_journal_to_mutable$" "$REPO/setup/pi/make-root-fs-readonly.sh" "called at the top level"
+cp /tmp/fstab.real /etc/fstab 2>/dev/null || true
+rm -rf /tmp/jm /tmp/journal.progress
+
 start_case "the swap entry goes with the swap file"
 # Deleting /var/swap while DietPi's fstab still points at it fails local-fs.target.
 assert_grep "swapoff /var/swap" "$REPO/setup/pi/make-root-fs-readonly.sh" "swap is turned off"
