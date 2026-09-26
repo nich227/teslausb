@@ -2317,7 +2317,18 @@ start_case "encrypted clips: the viewer's key request is forwarded to Tesla from
 # the video is fetched from /TeslaCam/ as usual and decrypted in the browser.
 nginx_conf="$REPO/teslausb-www/teslausb.nginx"
 assert_grep "location = /tesla/decrypt {" "$nginx_conf" "an exact-match location for the one request"
-assert_grep "proxy_pass https://dashcam.tesla.com/api/1/decrypt/batch;" "$nginx_conf" "forwarded to Tesla's batch endpoint"
+# shellcheck disable=SC2016  # the $ in these two is nginx's variable, not the shell's
+assert_grep 'proxy_pass \$tesla_dashcam/api/1/decrypt/batch;' "$nginx_conf" "forwarded to Tesla's batch endpoint"
+# shellcheck disable=SC2016
+assert_grep 'set \$tesla_dashcam https://dashcam.tesla.com;' "$nginx_conf" "which is Tesla's dashcam host"
+# A literal upstream host is resolved when the configuration loads, so nginx refused to
+# start whenever DNS was not yet answering: at boot before the network was up, or with no
+# internet at all. That took the entire web interface down, not just this one path. A
+# variable defers the lookup to the request, and needs a resolver to do it with.
+assert_grep "^ *resolver [0-9.]* [0-9.]* valid=[0-9]*s ipv6=off;" "$nginx_conf" \
+  "the host is resolved per request, so nginx starts without DNS"
+assert_no_grep "proxy_pass https://dashcam.tesla.com" "$nginx_conf" \
+  "and no literal Tesla host is left for nginx to resolve at startup"
 assert_grep "proxy_http_version 1.1;" "$nginx_conf" "over HTTP/1.1, which Tesla requires (426 otherwise)"
 assert_grep "proxy_ssl_server_name on;" "$nginx_conf" "with SNI, so the TLS handshake names the right host"
 assert_grep "limit_except POST { deny all; }" "$nginx_conf" "POST only"
@@ -2330,10 +2341,24 @@ then
   mkdir -p /tmp/nginx-check/www && : > /tmp/nginx-check/htpasswd
   sed -i "s|/var/www/html|/tmp/nginx-check/www|g; s|/etc/nginx/.htpasswd|/tmp/nginx-check/htpasswd|g" /tmp/nginx-check.conf
   printf 'events {}\nhttp { include /tmp/nginx-check.conf; }\n' > /tmp/nginx-check-main.conf
+  # Parse it with DNS unreachable, which is the boot-time condition that broke it. Only
+  # a resolver on 127.0.0.1 is quick to fail (connection refused); a dead remote one would
+  # sit through glibc's timeouts. The container has no way to look anything up meanwhile.
+  cp -L /etc/resolv.conf /tmp/nginx-check/resolv.conf.bak
+  echo "nameserver 127.0.0.1" > /etc/resolv.conf
   if nginx -t -c /tmp/nginx-check-main.conf -e /dev/null > /dev/null 2>&1
-  then ok "nginx accepts the configuration"
-  else not_ok "nginx accepts the configuration ($(nginx -t -c /tmp/nginx-check-main.conf 2>&1 | grep -m1 emerg))"
+  then ok "nginx accepts the configuration with no DNS available"
+  else not_ok "nginx accepts the configuration with no DNS available ($(nginx -t -c /tmp/nginx-check-main.conf -e /dev/null 2>&1 | grep -m1 emerg))"
   fi
+  # and the check means something: the literal host it replaced does fail here
+  # shellcheck disable=SC2016  # the $ is nginx's, not the shell's
+  sed -i 's|proxy_pass \$tesla_dashcam/|proxy_pass https://dashcam.tesla.com/|' /tmp/nginx-check.conf
+  literal_out=$(nginx -t -c /tmp/nginx-check-main.conf -e /dev/null 2>&1)
+  if grep -q 'host not found in upstream "dashcam.tesla.com"' <<< "$literal_out"
+  then ok "whereas a literal upstream host cannot even be parsed without DNS"
+  else not_ok "expected the literal-host variant to fail without DNS, but it did not ($literal_out)"
+  fi
+  cp /tmp/nginx-check/resolv.conf.bak /etc/resolv.conf
   rm -rf /tmp/nginx-check /tmp/nginx-check.conf /tmp/nginx-check-main.conf
 else
   note "nginx not installed in this container, config parse skipped"

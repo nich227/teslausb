@@ -14,10 +14,12 @@ FROM ${BASE_IMAGE}
 # in the DietPi container image, which gives us a real systemd-analyze.
 SHELL ["/bin/bash", "-c"]
 
-# jq is the one exception to installing nothing: the USB link watchdog and
+# jq is one exception to installing nothing: the USB link watchdog and
 # sentry-keeper parse Tessie's JSON with it, so without it those code paths
-# cannot run at all here. The suite separately asserts that teslausb's own setup
-# installs it, which is what covers the real device.
+# cannot run at all here. nginx is the other: the web configuration can only be
+# checked by nginx itself, and startup conditions such as an unreachable resolver
+# have to be tried against the real parser. The suite separately asserts that
+# teslausb's own setup installs both, which is what covers the real device.
 # /tmp has to be world writable with the sticky bit, as it is on a real device. The
 # rootfs is extracted with "debugfs rdump", which does not reproduce it faithfully, and
 # apt's gpgv method drops to the unprivileged _apt user to verify signatures: with a /tmp
@@ -26,7 +28,7 @@ SHELL ["/bin/bash", "-c"]
 # so it looked like a network problem for a while.
 RUN mkdir -p /tmp && chmod 1777 /tmp && \
     apt-get -q update && \
-    apt-get -q install -y --no-install-recommends jq && \
+    apt-get -q install -y --no-install-recommends jq nginx-light && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /repo

@@ -60,7 +60,14 @@ server {
     # The device holds no token and stores nothing.
     location = /tesla/decrypt {
         auth_basic off;
-        proxy_pass https://dashcam.tesla.com/api/1/decrypt/batch;
+        # Resolve Tesla's host per request, not at startup. A literal host in proxy_pass
+        # is looked up when the configuration loads, so nginx could not start at all
+        # without working DNS: at boot before the network settles, or anywhere without
+        # internet, which took the whole web interface down with it. Public resolvers,
+        # since this request needs the internet anyway.
+        resolver 1.1.1.1 8.8.8.8 valid=300s ipv6=off;
+        set $tesla_dashcam https://dashcam.tesla.com;
+        proxy_pass $tesla_dashcam/api/1/decrypt/batch;
         # Tesla answers 426 Upgrade Required to the HTTP/1.0 nginx speaks upstream by default
         proxy_http_version 1.1;
         proxy_set_header Connection "";
