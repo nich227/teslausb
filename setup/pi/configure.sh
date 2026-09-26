@@ -445,6 +445,35 @@ EOF
   systemctl enable usb-link-watchdog.timer
 }
 
+# The usb-link watchdog above is a systemd timer, so it can only recover from
+# faults that leave the kernel and systemd running. A kernel hang leaves the Pi
+# dark until someone unplugs it. Arm the BCM2835 hardware watchdog through
+# PID 1 so such a hang reboots the Pi by itself instead.
+# The kernel here ships the driver built in, so /dev/watchdog exists without a
+# dtparam. The driver's longest supported timeout is 15 s.
+function install_hardware_watchdog () {
+  local dropin=/etc/systemd/system.conf.d/teslausb-watchdog.conf
+
+  if [ ! -c /dev/watchdog ]
+  then
+    log_progress "no /dev/watchdog on this system, skipping hardware watchdog"
+    rm -f "$dropin"
+    return 0
+  fi
+
+  log_progress "Arming the hardware watchdog"
+  mkdir -p "${dropin%/*}"
+  cat << EOF > "$dropin"
+# Installed by teslausb: reboot if PID 1 stops responding, e.g. after a kernel hang.
+[Manager]
+RuntimeWatchdogSec=15s
+RebootWatchdogSec=2min
+EOF
+
+  # system.conf is only read when PID 1 starts, so re-exec it to arm now
+  systemctl daemon-reexec
+}
+
 function install_archive_scripts () {
   local install_path="$1"
   local archive_module="$2"
@@ -925,4 +954,5 @@ EOF
 systemctl enable teslausb.service
 
 install_usb_link_watchdog /root/bin
+install_hardware_watchdog
 install_sentry_keeper /root/bin

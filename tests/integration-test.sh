@@ -1882,6 +1882,59 @@ fi
 run_installer > /dev/null 2>&1
 
 # ===========================================================================
+banner "installer: install_hardware_watchdog"
+# ===========================================================================
+# Same extraction technique. The function keys off /dev/watchdog, which the test
+# container does not have, so it is created (and removed) here with mknod.
+
+run_hw_installer () {
+  rm -f /tmp/systemctl.calls
+  (
+    set -uo pipefail
+    # shellcheck disable=SC2329
+    log_progress () { echo "log: $*"; }
+    eval "$(sed -n '/^function install_hardware_watchdog/,/^}/p' "$REPO/setup/pi/configure.sh")"
+    install_hardware_watchdog
+  )
+}
+readonly HW_DROPIN=/etc/systemd/system.conf.d/teslausb-watchdog.conf
+
+start_case "arms the watchdog through PID 1 when /dev/watchdog exists"
+rm -f "$HW_DROPIN" /dev/watchdog
+mknod /dev/watchdog c 10 130
+if ! run_hw_installer > /tmp/hw-installer.log 2>&1
+then not_ok "installer exited non-zero: $(cat /tmp/hw-installer.log)"
+else ok "installer exited 0"
+fi
+assert_file "$HW_DROPIN" "system.conf drop-in written"
+assert_grep "^\[Manager\]" "$HW_DROPIN" "drop-in targets the [Manager] section"
+assert_grep "^RuntimeWatchdogSec=15s" "$HW_DROPIN" "runtime watchdog set to the BCM2835 maximum of 15 s"
+assert_grep "^RebootWatchdogSec=" "$HW_DROPIN" "a stuck reboot is also covered"
+assert_grep "systemctl daemon-reexec" /tmp/systemctl.calls "PID 1 re-executed so the setting takes effect now"
+
+start_case "systemd accepts the drop-in"
+if command -v systemd-analyze > /dev/null
+then
+  # 'cat-config' is the only systemd-analyze verb that parses system.conf drop-ins
+  if systemd-analyze cat-config systemd/system.conf 2> /dev/null | grep -q "RuntimeWatchdogSec=15s"
+  then ok "systemd-analyze reads the watchdog setting from our drop-in"
+  else not_ok "systemd-analyze did not pick up the drop-in"
+  fi
+else
+  ok "systemd-analyze not present, skipped"
+fi
+
+start_case "without /dev/watchdog it skips, and clears a stale drop-in"
+rm -f /dev/watchdog
+run_hw_installer > /tmp/hw-installer-off.log 2>&1
+assert_grep "skipping hardware watchdog" /tmp/hw-installer-off.log "explains why it skipped"
+assert_no_file "$HW_DROPIN" "stale drop-in removed"
+if grep -q "daemon-reexec" /tmp/systemctl.calls 2> /dev/null
+then not_ok "re-executed PID 1 for nothing"
+else ok "PID 1 left alone"
+fi
+
+# ===========================================================================
 banner "watchdog against a real teslausb layout"
 # ===========================================================================
 # Real paths this time: /backingfiles and /mutable actually exist in here, and

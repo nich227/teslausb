@@ -63,6 +63,8 @@ check_grep "the setup unit runs the setup driver" "first-boot.sh" "/lib/systemd/
 check_grep "teslausb.service releases the gadget on stop" "^ExecStop=-/root/bin/disable_gadget.sh" "/lib/systemd/system/teslausb.service"
 check_eq "the usb-link watchdog timer is active" "active" "systemctl is-active usb-link-watchdog.timer"
 check_grep "and fires every five minutes" "OnUnitActiveSec=5min" "/lib/systemd/system/usb-link-watchdog.timer"
+check_eq "the hardware watchdog is armed by PID 1" "RuntimeWatchdogUSec=15s" "systemctl show -p RuntimeWatchdogUSec"
+check_eq "and the kernel confirms it is running" "active" "cat /sys/class/watchdog/watchdog0/state"
 check_eq "DietPi's RAMlog units are disabled" "0" "systemctl list-unit-files --state=enabled --no-legend dietpi-ramlog* | wc -l"
 
 section "filesystem"
