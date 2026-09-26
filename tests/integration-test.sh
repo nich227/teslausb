@@ -42,6 +42,9 @@ assert_eq () {
   fi
 }
 
+# the same check with the expected value first
+assert_equals () { assert_eq "$2" "$1" "$3"; }
+
 assert_file () {
   if [ -f "$1" ]
   then ok "$2"
@@ -62,6 +65,16 @@ assert_grep () {
   else not_ok "$3 ('$1' not found in $2)"
   fi
 }
+
+assert_no_grep () {
+  if grep -q -- "$1" "$2" 2> /dev/null
+  then not_ok "$3 ('$1' found in $2)"
+  else ok "$3"
+  fi
+}
+
+# a check that could not run here; neither a pass nor a failure
+note () { printf '   skip: %s\n' "$1"; }
 
 banner () { printf '\n=== %s ===\n' "$1"; }
 
