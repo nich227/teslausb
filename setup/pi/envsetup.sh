@@ -117,7 +117,11 @@ function read_setup_variables {
       echo "WARNING: using '$BRANCH' branch because SNAPSHOTS_ENABLED is not true"
     fi
   else
-    BRANCH=${BRANCH:-main-dev}
+    # An update started from the web interface installs one release tag, and that
+    # has to win over a BRANCH the config sets, or the device would quietly install
+    # whatever that branch holds instead of the release it was offered. GitHub
+    # serves a tag's tarball at the same URL as a branch's.
+    BRANCH=${TESLAUSB_UPGRADE_REF:-${BRANCH:-main-dev}}
   fi
   CONFIGURE_ARCHIVING=${CONFIGURE_ARCHIVING:-true}
   UPGRADE_PACKAGES=${UPGRADE_PACKAGES:-false}

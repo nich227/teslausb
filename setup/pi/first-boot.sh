@@ -333,6 +333,9 @@ then
     if tar -xf /boot/teslausb-local/repo.tar -C /root/teslausb-src
     then
       export SOURCE_DIR=/root/teslausb-src
+      # git archive writes the commit into the tar's pax header; setup records it
+      # as the installed version, the same as it does for a downloaded tarball.
+      head -c 1024 /boot/teslausb-local/repo.tar | grep -ao 'comment=[0-9a-f]\{40\}' | cut -d= -f2 > "$SOURCE_DIR/.teslausb-commit" || true
       if [ -f "$SOURCE_DIR/setup/pi/setup-teslausb" ]
       then
         install -m 755 "$SOURCE_DIR/setup/pi/setup-teslausb" /root/bin/setup-teslausb

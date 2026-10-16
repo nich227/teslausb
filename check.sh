@@ -32,6 +32,7 @@ shellcheck --exclude=SC1091 \
            ./tests/timesync-test.sh \
            ./run/teslausb-timesync.sh \
            ./run/teslausb-url.sh \
+           ./run/teslausb-update-check.sh \
            ./tests/integration-test.sh \
            ./tests/run-integration-tests.sh \
            ./tests/device-conformance.sh \

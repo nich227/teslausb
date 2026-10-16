@@ -85,7 +85,13 @@ function copy_script () {
       mount -t tmpfs none "$SOURCE_DIR"
       (
         cd "$SOURCE_DIR"
-        curlwrapper -L "https://github.com/${REPO}/teslausb/archive/${BRANCH}.tar.gz" | tar zxf - --strip-components=1
+        curlwrapper -L "https://github.com/${REPO}/teslausb/archive/${BRANCH}.tar.gz" -o .source.tar.gz
+        # The tarball's pax header names the commit it was made from, and nothing
+        # else that reaches the device does: a branch name moves. Kept so setup
+        # can record which version this install is, for the update check.
+        gzip -dc .source.tar.gz | head -c 1024 | grep -ao 'comment=[0-9a-f]\{40\}' | cut -d= -f2 > .teslausb-commit || true
+        tar zxf .source.tar.gz --strip-components=1
+        rm -f .source.tar.gz
       )
     fi
   fi
@@ -1268,6 +1274,39 @@ copy_script run/teslausb-timesync.sh /etc/network/if-up.d
 mv -f /etc/network/if-up.d/teslausb-timesync.sh /etc/network/if-up.d/teslausb-timesync
 chmod 755 /etc/network/if-up.d/teslausb-timesync
 
+# Record which commit this install is, for the update check below. A branch name
+# says nothing once the branch moves, so the commit comes from the source tarball's
+# own header; a source supplied some other way has none, and the check then stays
+# quiet rather than guess.
+{
+  echo "repo=${REPO}"
+  echo "ref=${BRANCH}"
+  echo "commit=$(cat "$SOURCE_DIR/.teslausb-commit" 2> /dev/null || true)"
+} > /etc/teslausb-version
+chmod 644 /etc/teslausb-version
+
+# Look for a newer release once per boot, and say so on the console and in the web
+# interface. It is a plain service rather than an if-up.d hook so it runs once, not
+# on every reconnect, and Type=simple so a car that boots far from any network does
+# not hold up the rest of the boot while the check keeps retrying.
+copy_script run/teslausb-update-check.sh /usr/local/bin
+mv -f /usr/local/bin/teslausb-update-check.sh /usr/local/bin/teslausb-update-check
+chmod 755 /usr/local/bin/teslausb-update-check
+cat > /etc/systemd/system/teslausb-update-check.service << 'EOF'
+[Unit]
+Description=Check GitHub for a newer teslausb release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/teslausb-update-check
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable teslausb-update-check.service &> /dev/null || true
+
 # source setup-teslausb from .bashrc to set up completion
 if ! grep -q envsetup.sh /root/.bashrc
 then
@@ -1288,6 +1327,22 @@ then
 	fi
 	EOC
 fi
+
+# The boot check writes its notice to tty1 when it finds a release, but a login
+# that comes later, over ssh or after the console scrolled, would never see it.
+# The default user gets it too, since that is the account ssh logs in as.
+for rc in /root/.bashrc "/home/$(grep ":1000:1000:" /etc/passwd | awk -F : '{print $1}')/.bashrc"
+do
+  if [ -f "$rc" ] && ! grep -q TESLAUSB_TIP2 "$rc"
+  then
+    cat >> "$rc" <<- 'EOC'
+	# TESLAUSB_TIP2
+	if [ -n "$PS1" ] && [ -x /usr/local/bin/teslausb-update-check ]; then
+		/usr/local/bin/teslausb-update-check --notice
+	fi
+	EOC
+  fi
+done
 
 DEFUSER=$(grep ":1000:1000:" /etc/passwd | awk -F : '{print $1}')
 if [ -n "$DEFUSER" ]
