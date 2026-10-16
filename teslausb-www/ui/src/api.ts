@@ -80,6 +80,30 @@ export async function getTxBytes(): Promise<TxSample> {
   return r.json();
 }
 
+// What the boot-time update check found (updatestatus.sh). state is null until the
+// check has had an answer from GitHub since this boot.
+export interface UpdateState {
+  checked: string;
+  current: string;
+  latest: string;
+  name: string;
+  url: string;
+  available: boolean;
+}
+
+export async function getUpdateStatus(): Promise<{ state: UpdateState | null; running: boolean }> {
+  const r = await fetch(bust(CGI + 'updatestatus.sh'), { cache: 'no-store' });
+  if (!r.ok) throw new Error('updatestatus ' + r.status);
+  return r.json();
+}
+
+// Starts the upgrade to the release the device itself offered; the request carries
+// no version. Resolves with the reason when the device refuses.
+export async function startUpdate(): Promise<{ started: boolean; reason?: string }> {
+  const r = await fetch(CGI + 'update.sh', { method: 'POST', cache: 'no-store' });
+  return r.json();
+}
+
 // Whether the root filesystem is currently read-write.
 export async function getRwStatus(): Promise<boolean> {
   try {

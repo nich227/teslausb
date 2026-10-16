@@ -4,6 +4,7 @@ import AppLayout from '@cloudscape-design/components/app-layout';
 import SideNavigation, { SideNavigationProps } from '@cloudscape-design/components/side-navigation';
 import TeslaLogo from './components/TeslaLogo';
 import SettingsMenu from './components/SettingsMenu';
+import UpdateNotice from './components/UpdateNotice';
 import Spinner from '@cloudscape-design/components/spinner';
 import Box from '@cloudscape-design/components/box';
 import { applyMode, Mode } from '@cloudscape-design/global-styles';
@@ -82,6 +83,7 @@ export default function App() {
       <AppLayout
         headerSelector="#top-nav"
         toolsHide
+        notifications={<UpdateNotice />}
         navigationOpen={navOpen}
         onNavigationChange={(e) => setNavOpen(e.detail.open)}
         navigation={
