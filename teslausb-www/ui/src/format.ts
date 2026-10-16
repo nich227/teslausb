@@ -37,6 +37,19 @@ export function bitRate(bitsPerSec: number): string {
   return (bitsPerSec / 1e6).toFixed(bitsPerSec < 2.5e6 ? 1 : 0) + ' Mbit/s';
 }
 
+// Upload rate from two tx_bytes samples, in bits per second. Null when the pair
+// cannot give one: the same or an earlier device timestamp, or a counter that
+// went backwards, which is what a reboot between samples looks like.
+export function txRate(
+  prev: { ms: number; tx_bytes: number },
+  cur: { ms: number; tx_bytes: number },
+): number | null {
+  const elapsed = cur.ms - prev.ms;
+  const bytes = cur.tx_bytes - prev.tx_bytes;
+  if (elapsed <= 0 || bytes < 0) return null;
+  return (bytes * 8 * 1000) / elapsed;
+}
+
 // wifi_strength like "57/70" -> percent
 export function wifiPercent(s: string): number | null {
   const m = s.match(/(\d+)\s*\/\s*(\d+)/);

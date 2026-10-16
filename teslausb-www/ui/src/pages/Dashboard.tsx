@@ -13,8 +13,17 @@ import Container from '@cloudscape-design/components/container';
 import Grid from '@cloudscape-design/components/grid';
 import PieChart from '@cloudscape-design/components/pie-chart';
 import * as api from '../api';
-import { Config, Status, CamUsage } from '../api';
-import { uptimeString, spaceString, dateFromSeconds, wifiPercent, throttleFlags } from '../format';
+import { Config, Status, CamUsage, TxSample } from '../api';
+import {
+  uptimeString,
+  spaceString,
+  dateFromSeconds,
+  wifiPercent,
+  throttleFlags,
+  byteRate,
+  bitRate,
+  txRate,
+} from '../format';
 import { ThemeContext } from '../theme';
 
 const POLL_MS = 1000;
@@ -212,6 +221,36 @@ export default function Dashboard({ config }: { config: Config | null }) {
     return () => window.clearInterval(timer.current);
   }, []);
 
+  // Upload rate, sampled only while an archive run is active. Each sample is a
+  // cgi process on the device, and when nothing is archiving there is nothing to
+  // measure, so idle time costs the Pi nothing. The first sample after a run
+  // starts has no predecessor, so the rate appears one poll later.
+  const [uploadBps, setUploadBps] = useState<number | null>(null);
+  useEffect(() => {
+    if (!archiveActive) {
+      setUploadBps(null);
+      return;
+    }
+    let prev: TxSample | null = null;
+    let cancelled = false;
+    async function sample() {
+      try {
+        const cur = await api.getTxBytes();
+        if (cancelled) return;
+        if (prev) setUploadBps(txRate(prev, cur));
+        prev = cur;
+      } catch {
+        if (!cancelled) setUploadBps(null);
+      }
+    }
+    sample();
+    const t = window.setInterval(sample, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [archiveActive]);
+
   async function onToggleDrives() {
     setToggling(true);
     try {
@@ -269,6 +308,18 @@ export default function Dashboard({ config }: { config: Config | null }) {
             <StatusIndicator type="stopped">Idle</StatusIndicator>
           )}
         </Value>
+        {archiveActive && (
+          <Value
+            label="Upload speed"
+            info="Bytes leaving the Wi-Fi interface per second while the archive runs. Includes anything else on the link, such as this page."
+          >
+            {uploadBps == null ? (
+              <Skel w={150} />
+            ) : (
+              `${byteRate(uploadBps)} (${bitRate(uploadBps)})`
+            )}
+          </Value>
+        )}
         {!loading && status!.fan_speed && status!.fan_speed !== 'N/A' && (
           <Value label="Fan speed">{status!.fan_speed} RPM</Value>
         )}

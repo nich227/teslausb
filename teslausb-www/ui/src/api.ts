@@ -67,6 +67,19 @@ export async function getArchiveStatus(): Promise<boolean> {
   }
 }
 
+// Bytes sent on the wifi interface so far, with the device's own timestamp
+// (txbytes.sh). Two samples give the upload rate of a running archive.
+export interface TxSample {
+  ms: number;
+  tx_bytes: number;
+}
+
+export async function getTxBytes(): Promise<TxSample> {
+  const r = await fetch(bust(CGI + 'txbytes.sh'), { cache: 'no-store' });
+  if (!r.ok) throw new Error('txbytes ' + r.status);
+  return r.json();
+}
+
 // Whether the root filesystem is currently read-write.
 export async function getRwStatus(): Promise<boolean> {
   try {
