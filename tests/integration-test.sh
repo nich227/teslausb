@@ -732,6 +732,31 @@ else not_ok "did not run the staged setup script"
 fi
 rm -rf /boot/teslausb-local /tmp/srcstage
 
+start_case "the commit a staged image was built from is kept for setup to record"
+# build-image.sh stages the tree with git archive, which writes the commit into the
+# tar's pax header; nothing else that reaches the card names the version. tar's own
+# pax option writes the same header, so no git is needed here.
+setup_driver_env
+install_fake_setup
+mkdir -p /boot/teslausb-local /tmp/srcstage/setup/pi
+printf '#!/bin/bash\ntouch /teslausb/TESLAUSB_SETUP_FINISHED\n' > /tmp/srcstage/setup/pi/setup-teslausb
+tar --format=pax --pax-option=comment=3333333333333333333333333333333333333333 \
+  -cf /boot/teslausb-local/repo.tar -C /tmp/srcstage setup
+rm -f /root/bin/setup-teslausb
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+run_driver
+assert_eq "$(cat /root/teslausb-src/.teslausb-commit 2> /dev/null)" \
+  "3333333333333333333333333333333333333333" "the commit is beside the unpacked source"
+tar -cf /boot/teslausb-local/repo.tar -C /tmp/srcstage setup
+setup_driver_env
+install_fake_setup
+rm -f /root/bin/setup-teslausb
+echo "export ARCHIVE_SYSTEM=none" > /root/teslausb_setup_variables.conf
+run_driver
+assert_eq "$(wc -c < /root/teslausb-src/.teslausb-commit)" 0 "a tar without one leaves it empty"
+assert_grep "Using the sources staged in" /tmp/driver.log "and the install carries on"
+rm -rf /boot/teslausb-local /tmp/srcstage /root/teslausb-src
+
 start_case "a corrupt staged archive falls back to downloading"
 setup_driver_env
 install_fake_setup
@@ -3398,6 +3423,323 @@ assert_eq "$(run_url)" "http://teslausb.local or http://192.168.68.101" "skips l
 url_env "teslausb" "" "$(printf '[server]\nhost-name=teslausb\n')"
 assert_eq "$(run_url)" "http://teslausb.local" "no address at all: name only"
 rm -rf /tmp/urlroot
+
+banner "a newer release is offered, and only a newer one"
+# ===========================================================================
+# The boot check asks GitHub for the latest release and whether it contains this
+# install's commit. curl is stubbed to answer from fixtures keyed on the URL, so
+# every outcome of the compare can be shown without a network.
+
+update_env () {
+  # $1 compare status GitHub answers with, or "down" for no answer at all
+  rm -rf /tmp/updroot
+  mkdir -p /tmp/updroot/bin
+  printf 'repo=nich227\nref=main-dev\ncommit=%s\n' 1111111111111111111111111111111111111111 > /tmp/updroot/version
+  cat > /tmp/updroot/bin/curl <<EOF
+#!/bin/bash
+url="\${*: -1}"
+echo "\$url" >> /tmp/updroot/calls
+[ "$1" = down ] && exit 6
+case "\$url" in
+  */releases/latest) echo '{"tag_name":"v6.2","name":"teslausb-20261020.1","html_url":"https://example/v6.2"}' ;;
+  */compare/1111111111111111111111111111111111111111...v6.2) echo '{"status":"$1"}' ;;
+  *) exit 22 ;;
+esac
+EOF
+  cat > /tmp/updroot/bin/logger <<'EOF'
+#!/bin/bash
+echo "$*" >> /tmp/updroot/logger
+EOF
+  chmod +x /tmp/updroot/bin/*
+  : > /tmp/updroot/calls
+  : > /tmp/updroot/logger
+  : > /tmp/updroot/console
+}
+
+run_update_check () {
+  ( PATH="/tmp/updroot/bin:$PATH" \
+    VERSION_FILE=/tmp/updroot/version STATE_FILE=/tmp/updroot/state.json \
+    CONSOLE=/tmp/updroot/console ATTEMPTS=3 INTERVAL=0 \
+    trace_bash "$REPO/run/teslausb-update-check.sh" "$@" ) > /tmp/updroot/out 2>&1
+  UPD_RC=$?
+}
+
+start_case "a release ahead of the install is offered on the console and to the web interface"
+update_env ahead
+run_update_check
+assert_eq "$UPD_RC" 0 "exits 0"
+assert_eq "$(jq -r .available /tmp/updroot/state.json)" "true" "the state says an update is available"
+assert_eq "$(jq -r .latest /tmp/updroot/state.json)" "v6.2" "and names the release"
+assert_grep "A new teslausb release is available: v6.2" /tmp/updroot/console "the console was told"
+assert_grep "TESLAUSB_UPGRADE_REF=v6.2" /tmp/updroot/console "with the command that installs that release"
+assert_grep "/compare/1111111111111111111111111111111111111111...v6.2" /tmp/updroot/calls \
+  "it compared the installed commit with the release"
+
+start_case "a login prints the notice the check left"
+run_update_check --notice
+assert_grep "A new teslausb release is available: v6.2" /tmp/updroot/out "the login shell sees it"
+assert_grep "This device runs 1111111" /tmp/updroot/out "with the installed commit"
+
+start_case "a release the install is already ahead of is not offered"
+# An install from main-dev usually carries commits the latest release lacks;
+# offering that release would be offering a downgrade.
+update_env behind
+run_update_check
+assert_eq "$(jq -r .available /tmp/updroot/state.json)" "false" "behind: not available"
+assert_eq "$(wc -c < /tmp/updroot/console)" 0 "the console was left alone"
+run_update_check --notice
+assert_eq "$(wc -c < /tmp/updroot/out)" 0 "and a login prints nothing"
+update_env identical
+run_update_check
+assert_eq "$(jq -r .available /tmp/updroot/state.json)" "false" "identical: not available"
+
+start_case "with no network it retries, then gives up quietly"
+update_env down
+run_update_check
+assert_eq "$UPD_RC" 0 "exits 0"
+assert_eq "$(wc -l < /tmp/updroot/calls)" 3 "tried ATTEMPTS times"
+assert_grep "could not reach GitHub after 3 tries" /tmp/updroot/logger "said so"
+assert_eq "$(test -e /tmp/updroot/state.json && echo yes || echo no)" "no" "wrote no state it does not have"
+
+start_case "an install with no recorded commit is not checked"
+# A source supplied by download_sources carries no commit, and a notice that might
+# be wrong on every boot is worse than none.
+update_env ahead
+printf 'repo=nich227\nref=main-dev\ncommit=\n' > /tmp/updroot/version
+run_update_check
+assert_eq "$(wc -c < /tmp/updroot/calls)" 0 "GitHub was not contacted"
+assert_grep "no installed commit recorded" /tmp/updroot/logger "said why"
+
+start_case "the update endpoint starts only the update the device found"
+# update.sh is the one web endpoint that reinstalls the device, so its refusals are
+# shown here: wrong method, nothing offered, a tag that is not a version.
+run_update_cgi () {
+  ( PATH="/tmp/updroot/bin:$PATH" STATE_FILE=/tmp/updroot/state.json REQUEST_METHOD="$1" \
+    bash "$REPO/teslausb-www/html/cgi-bin/update.sh" ) 2>&1
+}
+update_env ahead
+run_update_check
+cat > /tmp/updroot/bin/systemctl <<'EOF'
+#!/bin/bash
+exit "${UNIT_ACTIVE_RC:-3}"
+EOF
+cat > /tmp/updroot/bin/sudo <<'EOF'
+#!/bin/bash
+echo "$*" >> /tmp/updroot/sudo
+EOF
+chmod +x /tmp/updroot/bin/*
+assert_eq "$(run_update_cgi GET | head -1)" "HTTP/1.0 405 Method Not Allowed" "GET is refused"
+assert_eq "$(test -e /tmp/updroot/sudo && echo ran || echo not)" "not" "and nothing ran"
+assert_grep '"started":true' <(run_update_cgi POST) "POST starts it"
+assert_grep "systemd-run --unit=teslausb-upgrade --collect --setenv=TESLAUSB_UPGRADE_REF=v6.2 /root/bin/setup-teslausb upgrade" \
+  /tmp/updroot/sudo "as its own unit, pinned to the offered release"
+rm -f /tmp/updroot/sudo
+assert_grep "already running" <(UNIT_ACTIVE_RC=0 run_update_cgi POST) "a second one is refused"
+jq '.latest = "v6.2; reboot"' /tmp/updroot/state.json > /tmp/updroot/s && mv /tmp/updroot/s /tmp/updroot/state.json
+assert_grep "no update is available" <(run_update_cgi POST) "a tag that is not a version is refused"
+jq '.latest = "v6.2" | .available = false' /tmp/updroot/state.json > /tmp/updroot/s && mv /tmp/updroot/s /tmp/updroot/state.json
+assert_grep "no update is available" <(run_update_cgi POST) "nothing offered: refused"
+assert_eq "$(test -e /tmp/updroot/sudo && echo ran || echo not)" "not" "none of the refusals ran anything"
+
+start_case "the update endpoint refuses while an archive runs, and says when it cannot start"
+# The upgrade kills archiveloop without the awake_stop that ends a run, which would
+# leave the car held awake with Sentry on.
+jq '.available = true' /tmp/updroot/state.json > /tmp/updroot/s && mv /tmp/updroot/s /tmp/updroot/state.json
+cat > /tmp/updroot/bin/pgrep <<'EOF'
+#!/bin/bash
+exit "${ARCHIVE_RC:-1}"
+EOF
+chmod +x /tmp/updroot/bin/pgrep
+assert_grep "an archive is running" <(ARCHIVE_RC=0 run_update_cgi POST) "refused mid-archive"
+assert_eq "$(test -e /tmp/updroot/sudo && echo ran || echo not)" "not" "and nothing ran"
+printf '#!/bin/bash\nexit 1\n' > /tmp/updroot/bin/sudo
+assert_eq "$(run_update_cgi POST | head -1)" "HTTP/1.0 500 Internal Server Error" \
+  "a unit that will not start is reported, not claimed as started"
+
+start_case "the status endpoint reports what the check found and whether an update runs"
+status_body () {
+  ( PATH="/tmp/updroot/bin:$PATH" STATE_FILE=/tmp/updroot/state.json \
+    bash "$REPO/teslausb-www/html/cgi-bin/updatestatus.sh" ) 2> /dev/null | sed '1,/^\r\?$/d'
+}
+assert_eq "$(status_body | jq -r .state.latest)" "v6.2" "the check's state is passed through"
+assert_eq "$(status_body | jq -r .running)" "false" "nothing running"
+assert_eq "$(UNIT_ACTIVE_RC=0 status_body | jq -r .running)" "true" "the upgrade unit active: running"
+rm -f /tmp/updroot/state.json
+assert_eq "$(status_body | jq -c .state)" "null" "not checked yet: state is null"
+echo '{"half a' > /tmp/updroot/state.json
+assert_eq "$(status_body | jq -c .state)" "null" "a file that is not JSON is not passed on"
+rm -rf /tmp/updroot
+
+banner "an update from the web interface installs the release it offered"
+# ===========================================================================
+# The tag reaches setup as TESLAUSB_UPGRADE_REF, and has to beat a BRANCH the
+# config sets, or the device would install whatever that branch holds instead.
+
+branch_for () {
+  # $1 config contents; the environment carries TESLAUSB_UPGRADE_REF if set.
+  # Only the config reader is lifted: sourcing envsetup.sh whole would remount /
+  # and rebuild /teslausb in the container. It runs in a fresh bash because it
+  # assigns REPO, which is readonly here, and that assignment ends a subshell.
+  printf '%s\n' "$1" > /tmp/branch.conf
+  sed -n -e '/^function safesource {$/,/^}$/p' -e '/^function read_setup_variables {$/,/^}$/p' \
+    "$REPO/setup/pi/envsetup.sh" > /tmp/branch.funcs
+  # shellcheck disable=SC2016 # expanded by the inner bash
+  env -u REPO -u BRANCH -u SNAPSHOTS_ENABLED setup_file=/tmp/branch.conf bash -c '
+    source /tmp/branch.funcs
+    read_setup_variables > /dev/null 2>&1
+    echo "$BRANCH"'
+}
+
+start_case "the config's branch is used when no release was asked for"
+assert_eq "$(branch_for 'export BRANCH=main-dev')" "main-dev" "the config's BRANCH"
+assert_eq "$(branch_for '')" "main-dev" "and the default without one"
+
+start_case "a release asked for wins over the config's branch"
+assert_eq "$(TESLAUSB_UPGRADE_REF=v6.2 branch_for 'export BRANCH=main-dev')" "v6.2" "over a set BRANCH"
+assert_eq "$(TESLAUSB_UPGRADE_REF=v6.2 branch_for '')" "v6.2" "and over the default"
+
+start_case "a no-snapshots install keeps its branch"
+# That branch exists for installs that cannot take snapshots; a release from
+# main-dev would not run on them.
+assert_eq "$(TESLAUSB_UPGRADE_REF=v6.2 branch_for 'export SNAPSHOTS_ENABLED=false')" "no-snapshots" \
+  "SNAPSHOTS_ENABLED=false still forces no-snapshots"
+rm -f /tmp/branch.conf /tmp/branch.funcs
+
+banner "the installed commit is recorded from the source tarball"
+# ===========================================================================
+# GitHub's tarball, like git archive, names its commit in the pax header, and a
+# branch name says nothing once the branch moves. copy_script is lifted from
+# setup-teslausb with curl and the tmpfs mount stubbed, and fed a tarball built
+# the way GitHub builds one: a top-level directory, stripped on extraction.
+
+copy_script_env () {
+  # $1 commit to put in the header, or empty for none
+  rm -rf /tmp/csroot /tmp/sourcedir
+  mkdir -p /tmp/csroot/bin /tmp/csroot/tree/teslausb-main-dev/setup/pi /tmp/csroot/dest
+  echo "#!/bin/bash" > /tmp/csroot/tree/teslausb-main-dev/setup/pi/envsetup.sh
+  local -a pax=()
+  [ -n "$1" ] && pax=(--format=pax "--pax-option=comment=$1")
+  tar "${pax[@]}" -czf /tmp/csroot/source.tar.gz -C /tmp/csroot/tree teslausb-main-dev
+  cat > /tmp/csroot/bin/curl <<'EOF'
+#!/bin/bash
+echo "$*" >> /tmp/csroot/calls
+while [ $# -gt 0 ]; do [ "$1" = -o ] && cp /tmp/csroot/source.tar.gz "$2"; shift; done
+EOF
+  printf '#!/bin/bash\nexit 0\n' > /tmp/csroot/bin/mount
+  printf '#!/bin/bash\nexit 0\n' > /tmp/csroot/bin/umount
+  chmod +x /tmp/csroot/bin/*
+  # shellcheck disable=SC2016 # ${REPO} is rewritten, not expanded
+  {
+    echo 'setup_progress () { :; }'
+    sed -n '/^function curlwrapper () {$/,/^}$/p' "$REPO/setup/pi/setup-teslausb"
+    sed -n '/^function copy_script () {$/,/^}$/p' "$REPO/setup/pi/setup-teslausb"
+  } | sed 's/\${REPO}/${GH_OWNER}/g' > /tmp/csroot/funcs.sh
+}
+
+# setup's REPO is the GitHub owner, and this suite's REPO is the checkout, so the
+# lifted code reads the owner as GH_OWNER instead.
+run_copy_script () {
+  ( PATH="/tmp/csroot/bin:$PATH"
+    # shellcheck disable=SC2034 # read by the lifted copy_script
+    GH_OWNER=nich227 BRANCH=main-dev
+    unset SOURCE_DIR
+    # shellcheck disable=SC1091
+    source /tmp/csroot/funcs.sh
+    copy_script setup/pi/envsetup.sh /tmp/csroot/dest ) > /tmp/csroot/out 2>&1
+  CS_RC=$?
+}
+
+start_case "the commit in the tarball's header is kept beside the source"
+copy_script_env 4444444444444444444444444444444444444444
+run_copy_script
+assert_eq "$CS_RC" 0 "copy_script succeeds"
+assert_grep "github.com/nich227/teslausb/archive/main-dev.tar.gz" /tmp/csroot/calls "fetched the branch tarball"
+assert_eq "$(cat /tmp/sourcedir/.teslausb-commit)" "4444444444444444444444444444444444444444" "the commit was recorded"
+assert_file /tmp/csroot/dest/envsetup.sh "the script was still copied out of the tree"
+assert_no_file /tmp/sourcedir/teslausb-main-dev "the top-level directory was stripped"
+assert_no_file /tmp/sourcedir/.source.tar.gz "and the tarball was not left in the tmpfs"
+
+start_case "a tarball without one records nothing and still installs"
+copy_script_env ""
+run_copy_script
+assert_eq "$CS_RC" 0 "copy_script succeeds"
+assert_eq "$(wc -c < /tmp/sourcedir/.teslausb-commit)" 0 "no commit recorded"
+assert_file /tmp/csroot/dest/envsetup.sh "the script was copied"
+rm -rf /tmp/csroot /tmp/sourcedir
+
+banner "setup installs the update check and records the version"
+# ===========================================================================
+# The block in setup-teslausb that does this is lifted out and run against a
+# scratch root, with copy_script and systemctl stubbed, so what it leaves behind
+# can be read: the version file, the unit, and the login tips.
+
+install_block_env () {
+  rm -rf /tmp/inst
+  mkdir -p /tmp/inst/etc/systemd/system /tmp/inst/usr/local/bin /tmp/inst/root /tmp/inst/home/dietpi /tmp/inst/src
+  : > /tmp/inst/root/.bashrc
+  : > /tmp/inst/home/dietpi/.bashrc
+  printf 'root:x:0:0::/root:/bin/bash\ndietpi:x:1000:1000::/home/dietpi:/bin/bash\n' > /tmp/inst/etc/passwd
+  # shellcheck disable=SC2016 # written for the lifted block to expand, or rewritten in it
+  {
+    echo 'copy_script () { cp "$CHECKOUT/$1" "$2/${1##*/}"; chmod +x "$2/${1##*/}"; }'
+    echo 'systemctl () { echo "systemctl $*" >> /tmp/inst/systemctl.calls; }'
+    sed -n '/^# Record which commit this install is/,/^systemctl enable teslausb-update-check.service/p' \
+      "$REPO/setup/pi/setup-teslausb"
+    sed -n '/^# The boot check writes its notice to tty1/,/^done$/p' "$REPO/setup/pi/setup-teslausb"
+  } | sed -e 's|/etc/|/tmp/inst/etc/|g' -e 's|/usr/local/bin|/tmp/inst/usr/local/bin|g' \
+          -e 's|/root/\.bashrc|/tmp/inst/root/.bashrc|g' -e 's|"/home/|"/tmp/inst/home/|g' \
+          -e 's/\${REPO}/${GH_OWNER}/g' > /tmp/inst/block.sh
+}
+
+run_install_block () {
+  # shellcheck disable=SC2034 # all read by the lifted block
+  ( CHECKOUT="$REPO" GH_OWNER=nich227 BRANCH=main-dev SOURCE_DIR=/tmp/inst/src
+    # shellcheck disable=SC1091
+    source /tmp/inst/block.sh ) > /tmp/inst/out 2>&1
+  INST_RC=$?
+}
+
+start_case "the version, the unit and the login tips are installed"
+install_block_env
+echo 5555555555555555555555555555555555555555 > /tmp/inst/src/.teslausb-commit
+run_install_block
+assert_eq "$INST_RC" 0 "the block runs cleanly"
+assert_eq "$(cat /tmp/inst/etc/teslausb-version)" \
+  "$(printf 'repo=nich227\nref=main-dev\ncommit=5555555555555555555555555555555555555555')" \
+  "the version file names the repo, the ref and the commit"
+assert_eq "$(stat -c %a /tmp/inst/etc/teslausb-version)" "644" "readable by the web server"
+assert_file /tmp/inst/usr/local/bin/teslausb-update-check "the check is installed without its .sh"
+assert_eq "$(test -x /tmp/inst/usr/local/bin/teslausb-update-check && echo yes)" "yes" "and is executable"
+unit=/tmp/inst/etc/systemd/system/teslausb-update-check.service
+assert_grep "^ExecStart=/tmp/inst/usr/local/bin/teslausb-update-check$" "$unit" "the unit runs the installed check"
+assert_grep "^Type=simple$" "$unit" "without holding up the boot while it retries"
+assert_grep "^After=network-online.target$" "$unit" "after the network"
+assert_grep "^WantedBy=multi-user.target$" "$unit" "on every boot"
+assert_grep "enable teslausb-update-check.service" /tmp/inst/systemctl.calls "and it is enabled"
+assert_grep "TESLAUSB_TIP2" /tmp/inst/root/.bashrc "root's login shows the notice"
+assert_grep "TESLAUSB_TIP2" /tmp/inst/home/dietpi/.bashrc "so does the ssh user's"
+
+start_case "running setup again does not add the tips twice"
+run_install_block
+assert_eq "$(grep -c TESLAUSB_TIP2 /tmp/inst/root/.bashrc)" 1 "root: once"
+assert_eq "$(grep -c TESLAUSB_TIP2 /tmp/inst/home/dietpi/.bashrc)" 1 "dietpi: once"
+
+start_case "the login tip prints the notice only when there is a release to offer"
+printf '{"available":true,"latest":"v6.2","name":"teslausb-20261020.1","current":"5555555555555555555555555555555555555555"}\n' \
+  > /tmp/inst/state.json
+tip_out=$(STATE_FILE=/tmp/inst/state.json bash -c 'PS1="$ "; source /tmp/inst/home/dietpi/.bashrc' 2>&1)
+assert_grep "A new teslausb release is available: v6.2" <(echo "$tip_out") "an interactive login sees it"
+tip_out=$(STATE_FILE=/tmp/inst/state.json bash -c 'unset PS1; source /tmp/inst/home/dietpi/.bashrc' 2>&1)
+assert_eq "$tip_out" "" "a non-interactive shell, like scp, prints nothing"
+echo '{"available":false}' > /tmp/inst/state.json
+tip_out=$(STATE_FILE=/tmp/inst/state.json bash -c 'PS1="$ "; source /tmp/inst/home/dietpi/.bashrc' 2>&1)
+assert_eq "$tip_out" "" "nothing to offer: nothing printed"
+
+start_case "a source with no recorded commit leaves it empty, so the check stays quiet"
+install_block_env
+run_install_block
+assert_grep "^commit=$" /tmp/inst/etc/teslausb-version "commit is empty"
+rm -rf /tmp/inst
 
 # ===========================================================================
 if [ -n "${COVERAGE:-}" ]

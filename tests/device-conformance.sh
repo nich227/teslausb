@@ -94,6 +94,8 @@ fi
 check "the archive ssh key is in place" "test -f /root/.ssh/id_ed25519"
 check_grep "RSYNC_PATH carries no escaped spaces" "^export RSYNC_PATH='[^\\\\]*'\$" "/root/teslausb_setup_variables.conf"
 check "the clock is stepped when a client network comes up" "test -x /etc/network/if-up.d/teslausb-timesync"
+check_grep "the installed commit is recorded, for the update check" "^commit=[0-9a-f]\{40\}\$" "/etc/teslausb-version"
+check "the update check runs at boot" "systemctl is-enabled --quiet teslausb-update-check.service"
 
 section "hardware"
 check "a real USB device controller is present" "ls /sys/class/udc | grep -q ."

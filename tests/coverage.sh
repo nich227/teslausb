@@ -40,6 +40,7 @@ else
     run/rsync_archive/archive-clips.sh
     run/teslausb-timesync.sh
     run/teslausb-url.sh
+    run/teslausb-update-check.sh
     tools/prepare-boot-partition.sh
   )
 fi
