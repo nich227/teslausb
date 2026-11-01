@@ -29,7 +29,7 @@ If you are interested in having more detailed information about how TeslaUsb wor
 Required:
 
 - [A Raspberry Pi or other SBC that supports USB OTG](https://github.com/marcone/teslausb/wiki/Hardware), with a [DietPi image](https://dietpi.com/#download) available for it.
-- A Micro SD card, at least 64 GB in size, and an adapter (if necessary) to connect the card to your computer.
+- A Micro SD card, at least 64 GB in size, and an adapter (if necessary) to connect the card to your computer. Use a card made for continuous recording, sold as "high endurance" or "endurance" (SanDisk High Endurance or Max Endurance, Samsung PRO Endurance): the car writes to it all day, every day, and ordinary cards wear out. On the Pi Zero 2 W and Pi 3, a SanDisk High Endurance card also gets its bus clock doubled automatically once it has passed a trial, which halves the time the car takes to load a clip (see `SD_OVERCLOCK` in the configuration file).
 - Cable(s) to connect the SBC to the Tesla (USB A/Micro B cable for the Pi Zero, USB A/C cable for the Pi 4 and 5, other SBCs vary)
 
 Optional:

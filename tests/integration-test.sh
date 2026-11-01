@@ -3768,6 +3768,295 @@ assert_grep "^commit=$" /tmp/inst/etc/teslausb-version "commit is empty"
 assert_no_file /tmp/inst/curl.calls "nothing was fetched"
 rm -rf /tmp/inst /tmp/sourcedir
 
+banner "the SD card clock is raised only after the card has passed a trial"
+# ===========================================================================
+# teslausb-sd-overclock is run against a fake sysfs, a fake boot partition and
+# stubbed mount, systemctl and dmesg, so every step of its state machine is
+# exercised: the decision at setup, the tryboot handoff, the verification on the
+# trial boot, and the recovery paths.
+
+readonly SDO=/tmp/sdo
+sdo_env () {
+  # $1 card name, $2 manfid, $3 oemid, $4 controller compatible string
+  rm -rf "$SDO"
+  mkdir -p "$SDO/bin" "$SDO/boot" "$SDO/state" "$SDO/sys/soc/mmc/host/mmc0/card" "$SDO/sys/soc/mmc/of_node" "$SDO/run"
+  echo "${1:-SH256}" > "$SDO/sys/soc/mmc/host/mmc0/card/name"
+  echo "${2:-0x000003}" > "$SDO/sys/soc/mmc/host/mmc0/card/manfid"
+  echo "${3:-0x5344}" > "$SDO/sys/soc/mmc/host/mmc0/card/oemid"
+  printf '%s\0' "${4:-brcm,bcm2835-sdhost}" > "$SDO/sys/soc/mmc/of_node/compatible"
+  # the script walks device/../../../of_node from the block device, as sysfs lays it out
+  mkdir -p "$SDO/sys/block/mmcblk0"
+  ln -s "$SDO/sys/soc/mmc/host/mmc0/card" "$SDO/sys/block/mmcblk0/device"
+  printf 'gpu_mem=16\ndtparam=audio=off\n[pi4]\narm_boost=1\n[all]\ndtoverlay=dwc2\n' > "$SDO/boot/config.txt"
+  printf 'clock:\t\t50000000 Hz\nactual clock:\t50000000 Hz\nbus width:\t2 (4 bits)\n' > "$SDO/ios"
+  printf '\0\0\0\0' > "$SDO/tryboot"
+  head -c 1048576 /dev/urandom > "$SDO/sample.img"
+  : > "$SDO/dmesg"
+  : > "$SDO/drop_caches"
+  cat > "$SDO/bin/systemctl" <<'EOF'
+#!/bin/bash
+echo "systemctl $*" >> /tmp/sdo/calls
+EOF
+  cat > "$SDO/bin/mount" <<'EOF'
+#!/bin/bash
+echo "mount $*" >> /tmp/sdo/calls
+EOF
+  cat > "$SDO/bin/mountpoint" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  cat > "$SDO/bin/findmnt" <<'EOF'
+#!/bin/bash
+echo "rw,relatime,fmask=0022"
+EOF
+  cat > "$SDO/bin/dmesg" <<'EOF'
+#!/bin/bash
+cat /tmp/sdo/dmesg
+EOF
+  chmod +x "$SDO/bin/"*
+  : > "$SDO/calls"
+}
+
+run_sdo () {
+  local sdo_path
+  sdo_path="$SDO/bin:$(printenv PATH)"
+  ( PATH="$sdo_path" STATE_DIR="$SDO/state" BOOT_DIR="$SDO/boot" SYS_BLOCK="$SDO/sys/block/mmcblk0" \
+    MMC_IOS="$SDO/ios" TRYBOOT_FLAG="$SDO/tryboot" REBOOT_PARAM="$SDO/run/reboot-param" \
+    DROP_CACHES="$SDO/drop_caches" SAMPLE_DEV="$SDO/sample.img" SAMPLE_MB=1 WRITE_MB=1 DD_FLAGS='' \
+    trace_bash "$REPO/run/teslausb-sd-overclock.sh" "$@" ) > "$SDO/out" 2>&1
+  SDO_RC=$?
+}
+sdo_state () { cat "$SDO/state/state" 2> /dev/null; }
+sdo_set_ios () { printf 'clock:\t\t%s Hz\nactual clock:\t%s Hz\n' "$1" "$1" > "$SDO/ios"; }
+sdo_set_tryboot () { printf '\0\0\0\1' > "$SDO/tryboot"; }
+
+start_case "auto: a SanDisk High Endurance card on the sdhost controller is queued for a trial"
+sdo_env
+run_sdo configure auto
+assert_eq "$SDO_RC" 0 "exits 0"
+assert_eq "$(sdo_state)" "pending" "state is pending"
+assert_grep "SH256 (manufacturer 0x000003, oem 0x5344) will be tried at 100 MHz" "$SDO/state/log" "the log names the card"
+assert_no_grep "sd_overclock" "$SDO/boot/config.txt" "config.txt is not touched at this point"
+
+start_case "auto: a card not known to be made for recording is skipped, and told how to insist"
+sdo_env EB1QT 0x00001b 0x534d
+run_sdo configure auto
+assert_grep "^skipped: EB1QT" "$SDO/state/state" "state records why"
+assert_grep "SD_OVERCLOCK=true tries it anyway" "$SDO/out" "and the override is named"
+
+start_case "true: any card is queued"
+sdo_env EB1QT 0x00001b 0x534d
+run_sdo configure true
+assert_eq "$(sdo_state)" "pending" "pending"
+
+start_case "a controller that ignores sd_overclock gets nothing, whatever the card"
+sdo_env SH256 0x000003 0x5344 "brcm,bcm2711-emmc2"
+run_sdo configure true
+assert_eq "$(sdo_state)" "unsupported" "unsupported"
+assert_grep "does not take sd_overclock" "$SDO/out" "says so"
+
+start_case "a line the user put in config.txt themselves is left alone"
+sdo_env
+printf 'dtparam=sd_overclock=100\n' >> "$SDO/boot/config.txt"
+run_sdo configure auto
+assert_eq "$(sdo_state)" "manual" "manual"
+assert_eq "$(grep -c sd_overclock "$SDO/boot/config.txt")" 1 "and not duplicated"
+
+start_case "a trial that failed is not repeated by auto, but is by true"
+sdo_env
+echo "failed: the clock is still 50 MHz" > "$SDO/state/state"
+run_sdo configure auto
+assert_grep "^failed" "$SDO/state/state" "auto leaves it failed"
+assert_grep "set SD_OVERCLOCK=true to try again" "$SDO/out" "and says how to retry"
+run_sdo configure true
+assert_eq "$(sdo_state)" "pending" "true queues it again"
+
+start_case "enabled and trying are not disturbed by another setup run"
+sdo_env
+echo enabled > "$SDO/state/state"
+run_sdo configure auto
+assert_eq "$(sdo_state)" "enabled" "enabled stays"
+echo trying > "$SDO/state/state"
+run_sdo configure true
+assert_eq "$(sdo_state)" "trying" "trying stays"
+
+start_case "an unknown value leaves everything alone"
+sdo_env
+run_sdo configure maybe
+assert_eq "$SDO_RC" 0 "exits 0"
+assert_eq "$(sdo_state)" "" "no state written"
+assert_grep "not one of auto, true or false" "$SDO/out" "explains"
+
+start_case "false removes the setting teslausb added, keeps one the user added, and drops a pending tryboot.txt"
+sdo_env
+printf '# teslausb: a faster SD card clock, verified on this card\ndtparam=sd_overclock=100\n' | cat - "$SDO/boot/config.txt" > "$SDO/boot/c" && mv "$SDO/boot/c" "$SDO/boot/config.txt"
+echo "dtparam=sd_overclock=100" > "$SDO/boot/tryboot.txt"
+echo enabled > "$SDO/state/state"
+run_sdo configure false
+assert_eq "$(sdo_state)" "disabled" "disabled"
+assert_no_grep "sd_overclock" "$SDO/boot/config.txt" "the setting is gone"
+assert_no_grep "teslausb: a faster SD card clock" "$SDO/boot/config.txt" "and its comment"
+assert_grep "^gpu_mem=16$" "$SDO/boot/config.txt" "the rest of the file is intact"
+assert_no_file "$SDO/boot/tryboot.txt" "tryboot.txt removed"
+assert_eq "$(grep -c "mount -o remount" "$SDO/calls")" 0 "a writable boot partition is not remounted"
+sdo_env
+run_sdo configure false
+assert_eq "$(sdo_state)" "disabled" "with nothing to remove it is still disabled"
+
+start_case "boot, pending: the checksum is taken, tryboot.txt written, and the device reboots with the tryboot flag"
+sdo_env
+echo pending > "$SDO/state/state"
+printf '#!/bin/bash\necho "ro,relatime,fmask=0022"\n' > "$SDO/bin/findmnt"
+run_sdo boot
+assert_eq "$SDO_RC" 0 "exits 0"
+assert_eq "$(sdo_state)" "trying" "state is trying"
+assert_eq "$(cat "$SDO/state/sample.sha256")" "$(sha256sum < "$SDO/sample.img" | cut -d' ' -f1)" "the sample checksum is the card's first megabyte"
+assert_file "$SDO/boot/tryboot.txt" "tryboot.txt written"
+assert_eq "$(sed -n 2p "$SDO/boot/tryboot.txt")" "dtparam=sd_overclock=100" "with the setting on line 2, above every dtoverlay and [model] filter"
+assert_eq "$(sed -n 1p "$SDO/boot/tryboot.txt")" "# teslausb: a faster SD card clock, verified on this card" "under a comment that marks it as ours"
+assert_eq "$(tail -n +3 "$SDO/boot/tryboot.txt")" "$(cat "$SDO/boot/config.txt")" "and the rest is config.txt unchanged"
+assert_no_grep "sd_overclock" "$SDO/boot/config.txt" "config.txt itself is untouched"
+assert_eq "$(cat "$SDO/run/reboot-param")" "0 tryboot" "the reboot parameter asks the firmware for one tryboot"
+assert_grep "^systemctl reboot$" "$SDO/calls" "and the device reboots"
+assert_grep "^mount -o remount,rw $SDO/boot$" "$SDO/calls" "a read-only boot partition is made writable"
+assert_grep "^mount -o remount,ro $SDO/boot$" "$SDO/calls" "and put back"
+assert_grep "at 50 MHz the card reads at" "$SDO/state/log" "the speed before is logged"
+
+start_case "boot, trying, but this is an ordinary boot: the trial did not complete"
+echo trying > "$SDO/state/state"
+: > "$SDO/calls"
+run_sdo boot
+assert_grep "^failed: the trial boot did not complete" "$SDO/state/state" "failed, with the reason"
+assert_no_file "$SDO/boot/tryboot.txt" "tryboot.txt removed so the next tryboot is not a surprise"
+assert_no_grep "systemctl reboot" "$SDO/calls" "no reboot: this boot is already on the standard clock"
+
+sdo_trial () {
+  # a trial boot with the card at 100 MHz and the checksum from the pending step
+  sdo_env
+  echo trying > "$SDO/state/state"
+  sha256sum < "$SDO/sample.img" | cut -d' ' -f1 > "$SDO/state/sample.sha256"
+  echo "23.4 MB/s" > "$SDO/state/speed"
+  (printf '# teslausb: a faster SD card clock, verified on this card\ndtparam=sd_overclock=100\n'; cat "$SDO/boot/config.txt") > "$SDO/boot/tryboot.txt"
+  sdo_set_tryboot
+  sdo_set_ios 100000000
+}
+
+start_case "boot, the trial boot: a card that passes every check has the setting kept"
+sdo_trial
+run_sdo boot
+assert_eq "$SDO_RC" 0 "exits 0"
+assert_eq "$(sdo_state)" "enabled" "enabled"
+assert_eq "$(sed -n 2p "$SDO/boot/config.txt")" "dtparam=sd_overclock=100" "config.txt now carries the setting"
+assert_no_file "$SDO/boot/tryboot.txt" "tryboot.txt became config.txt"
+assert_no_grep "systemctl reboot" "$SDO/calls" "no reboot needed: this boot already runs at the new clock"
+assert_grep "verified at 100 MHz" "$SDO/state/log" "logged as verified"
+assert_grep "was 23.4 MB/s" "$SDO/state/log" "with the speed it replaced"
+assert_no_file "$SDO/state/scratch" "the write test cleaned up"
+assert_no_file "$SDO/state/sample.sha256" "the checksum is no longer needed"
+
+start_case "the trial boot: a clock that did not change is a failure, reverted with a reboot"
+sdo_trial
+sdo_set_ios 50000000
+run_sdo boot
+assert_grep "^failed: the clock is still 50 MHz" "$SDO/state/state" "failed"
+assert_no_grep "sd_overclock" "$SDO/boot/config.txt" "config.txt untouched"
+assert_no_file "$SDO/boot/tryboot.txt" "tryboot.txt removed"
+assert_grep "^systemctl reboot$" "$SDO/calls" "rebooted back to the standard clock"
+
+start_case "the trial boot: data that reads back differently is a failure"
+sdo_trial
+echo other > "$SDO/state/sample.sha256"
+run_sdo boot
+assert_grep "^failed: data on the card read back differently" "$SDO/state/state" "failed"
+assert_grep "^systemctl reboot$" "$SDO/calls" "rebooted"
+
+start_case "the trial boot: SD errors in the kernel log are a failure"
+sdo_trial
+printf '[ 12.1] mmc0: new high speed SDXC card\n[ 40.2] mmc0: error -84 whilst initialising SD card\n' > "$SDO/dmesg"
+run_sdo boot
+assert_grep "^failed: the kernel logged 1 SD errors" "$SDO/state/state" "failed, counting them"
+assert_grep "^systemctl reboot$" "$SDO/calls" "rebooted"
+
+start_case "the trial boot: a write that cannot be made is a failure"
+sdo_trial
+mkdir "$SDO/state/scratch"
+run_sdo boot
+assert_grep "^failed: data written at 100 MHz did not read back the same" "$SDO/state/state" "failed on the write test"
+assert_grep "^systemctl reboot$" "$SDO/calls" "rebooted"
+
+start_case "boot, enabled: a config.txt that lost the setting gets it back"
+sdo_env
+echo enabled > "$SDO/state/state"
+run_sdo boot
+assert_eq "$(sed -n 2p "$SDO/boot/config.txt")" "dtparam=sd_overclock=100" "restored"
+assert_grep "lost dtparam=sd_overclock=100; restoring" "$SDO/state/log" "and said so"
+run_sdo boot
+assert_eq "$(grep -c sd_overclock "$SDO/boot/config.txt")" 1 "a second boot adds nothing"
+
+start_case "boot with no decision, and the other verbs"
+sdo_env
+run_sdo boot
+assert_eq "$SDO_RC" 0 "nothing to do exits 0"
+assert_eq "$(sdo_state)" "" "and writes no state"
+echo enabled > "$SDO/state/state"
+run_sdo status
+assert_grep "^state: enabled$" "$SDO/out" "status shows the state"
+assert_grep "^card: SH256 (manufacturer 0x000003, oem 0x5344)$" "$SDO/out" "the card"
+assert_grep "^clock: 50 MHz$" "$SDO/out" "and the clock"
+run_sdo
+assert_eq "$SDO_RC" 2 "no verb is a usage error"
+rm -rf "$SDO"
+
+banner "installer: install_sd_overclock"
+# ===========================================================================
+install_sd_overclock_env () {
+  rm -rf /tmp/sdoi
+  mkdir -p /tmp/sdoi/bin /tmp/sdoi/lib/systemd/system
+  : > /tmp/sdoi/calls
+  # copy_script delivers a stub in place of the tool, which records how it is called
+  cat > /tmp/sdoi/stub <<'EOF'
+#!/bin/bash
+echo "tool $*" >> /tmp/sdoi/calls
+EOF
+  # shellcheck disable=SC2016 # expanded by the lifted function
+  {
+    echo 'log_progress () { echo "log: $*"; }'
+    echo 'copy_script () { cp /tmp/sdoi/stub "$2/${1##*/}"; }'
+    echo 'systemctl () { echo "systemctl $*" >> /tmp/sdoi/calls; }'
+    sed -n '/^function install_sd_overclock () {$/,/^}$/p' "$REPO/setup/pi/configure.sh"
+  } | sed -e 's|/usr/local/bin|/tmp/sdoi/bin|g' -e 's|/lib/systemd/system|/tmp/sdoi/lib/systemd/system|g' > /tmp/sdoi/func.sh
+}
+
+run_install_sd_overclock () {
+  (
+    # shellcheck disable=SC1091
+    source /tmp/sdoi/func.sh
+    install_sd_overclock ) > /tmp/sdoi/out 2>&1
+  SDOI_RC=$?
+}
+
+start_case "the tool, its unit and the configured mode are installed"
+install_sd_overclock_env
+SD_OVERCLOCK=true run_install_sd_overclock
+assert_eq "$SDOI_RC" 0 "exits 0"
+assert_file /tmp/sdoi/bin/teslausb-sd-overclock "the tool is installed without its .sh"
+assert_eq "$(test -x /tmp/sdoi/bin/teslausb-sd-overclock && echo yes)" "yes" "and is executable"
+unit=/tmp/sdoi/lib/systemd/system/teslausb-sd-overclock.service
+assert_grep "^Before=teslausb.service$" "$unit" "the trial runs before the drive is offered to the car"
+assert_grep "^DefaultDependencies=no$" "$unit" "and does not wait for the rest of the boot"
+assert_grep "^RequiresMountsFor=/mutable /boot/firmware$" "$unit" "after the partitions it writes are mounted"
+assert_grep "^ConditionPathExists=/mutable/sd-overclock/state$" "$unit" "and only once setup has decided"
+assert_grep "^ExecStart=/tmp/sdoi/bin/teslausb-sd-overclock boot$" "$unit" "it runs the boot step"
+assert_grep "^systemctl enable teslausb-sd-overclock.service$" /tmp/sdoi/calls "the unit is enabled"
+assert_grep "^tool configure true$" /tmp/sdoi/calls "and the tool is told what the configuration asks"
+
+start_case "with SD_OVERCLOCK unset the mode is auto"
+install_sd_overclock_env
+run_install_sd_overclock
+assert_grep "^tool configure auto$" /tmp/sdoi/calls "auto"
+assert_grep "install_sd_overclock$" "$REPO/setup/pi/configure.sh" "and configure.sh calls the installer"
+rm -rf /tmp/sdoi
+
 # ===========================================================================
 if [ -n "${COVERAGE:-}" ]
 then

@@ -204,6 +204,23 @@ export CAM_SIZE=40G
 # hyphen.
 # export TESLAUSB_MDNS_NAME=dashcam
 
+# The SD card clock. On the Pi Zero 2 W and Pi 3 the SD bus runs at 50 MHz, which
+# is what limits how fast the car can read recordings back through the device.
+# teslausb can run it at 100 MHz, roughly doubling that, but only after the card has
+# passed a trial: the setting is tried for a single boot through the firmware's
+# tryboot, the card is checked for the clock really changing, for data reading
+# back intact and for kernel SD errors, and only a pass is kept in config.txt. A
+# card that will not even boot at 100 MHz comes back at 50 on the next power cycle.
+#
+#   auto   (default) try it when the card is one made for continuous recording
+#          and reports an identity known for certain: SanDisk High Endurance.
+#   true   try it with any card. Also retries after a failed trial.
+#   false  never, and remove the setting if teslausb added it earlier.
+#
+# The Pi 4 and 5 ignore sd_overclock and need nothing here. The outcome is in
+# /mutable/sd-overclock/log, and 'teslausb-sd-overclock status' shows the state.
+# export SD_OVERCLOCK=auto
+
 # uncomment to define an SSH public key that can be utilized to SSH into
 # teslausb as root
 # export SSH_ROOT_PUBLIC_KEY='ssh-rsa AAAAB3NzaC1yc2EAAAADA... user@host.domain'

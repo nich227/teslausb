@@ -41,6 +41,7 @@ else
     run/teslausb-timesync.sh
     run/teslausb-url.sh
     run/teslausb-update-check.sh
+    run/teslausb-sd-overclock.sh
     tools/prepare-boot-partition.sh
   )
 fi
