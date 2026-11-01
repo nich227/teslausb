@@ -36,6 +36,8 @@ The board is any DietPi image name (`RPi234-ARMv8` covers the Pi Zero 2 W and th
 
 ## Configure the SD card before first boot of the Pi
 
+Use a card made for continuous recording, sold as "high endurance" (SanDisk High Endurance or Max Endurance, Samsung PRO Endurance). The car writes to it all day and ordinary cards wear out. Leave the SD bus at its stock clock; the Pi's controller is not reliable above 50 MHz under constant writes, and the stock speed has ample headroom for what the car records.
+
 1.  Download the DietPi image for your board from [dietpi.com/#download](https://dietpi.com/#download) and flash it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/), balenaEtcher, or a similar tool.
 
     Do not use Raspberry Pi Imager's customisation options (hostname, wifi, SSH). DietPi has its own settings for those and teslausb fills them in for you in the next step.
