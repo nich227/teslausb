@@ -3683,6 +3683,7 @@ install_block_env () {
   {
     echo 'copy_script () { cp "$CHECKOUT/$1" "$2/${1##*/}"; chmod +x "$2/${1##*/}"; }'
     echo 'systemctl () { echo "systemctl $*" >> /tmp/inst/systemctl.calls; }'
+    echo 'curlwrapper () { echo "curl $*" >> /tmp/inst/curl.calls; while [ $# -gt 0 ]; do [ "$1" = -o ] && cp /tmp/inst/source.tar.gz "$2"; shift; done; }'
     sed -n '/^# Record which commit this install is/,/^systemctl enable teslausb-update-check.service/p' \
       "$REPO/setup/pi/setup-teslausb"
     sed -n '/^# The boot check writes its notice to tty1/,/^done$/p' "$REPO/setup/pi/setup-teslausb"
@@ -3692,8 +3693,9 @@ install_block_env () {
 }
 
 run_install_block () {
+  # $1 optional SOURCE_DIR, default a tree supplied some other way than the download
   # shellcheck disable=SC2034 # all read by the lifted block
-  ( CHECKOUT="$REPO" GH_OWNER=nich227 BRANCH=main-dev SOURCE_DIR=/tmp/inst/src
+  ( CHECKOUT="$REPO" GH_OWNER=nich227 BRANCH=main-dev SOURCE_DIR="${1:-/tmp/inst/src}"
     # shellcheck disable=SC1091
     source /tmp/inst/block.sh ) > /tmp/inst/out 2>&1
   INST_RC=$?
@@ -3739,7 +3741,32 @@ start_case "a source with no recorded commit leaves it empty, so the check stays
 install_block_env
 run_install_block
 assert_grep "^commit=$" /tmp/inst/etc/teslausb-version "commit is empty"
-rm -rf /tmp/inst
+assert_no_file /tmp/inst/curl.calls "and nothing was fetched to guess one"
+
+start_case "a tree handed over by an older installer has its commit read from the tarball again"
+# The installed script starts an upgrade by fetching the source and handing the
+# directory to the new one. Before the commit was kept beside the source, that
+# directory arrived without it.
+install_block_env
+rm -rf /tmp/sourcedir
+mkdir -p /tmp/sourcedir/tree/teslausb-main-dev
+tar --format=pax --pax-option=comment=6666666666666666666666666666666666666666 \
+  -czf /tmp/inst/source.tar.gz -C /tmp/sourcedir/tree teslausb-main-dev
+run_install_block /tmp/sourcedir
+assert_eq "$INST_RC" 0 "the block runs cleanly"
+assert_grep "github.com/nich227/teslausb/archive/main-dev.tar.gz" /tmp/inst/curl.calls "the branch tarball was fetched again"
+assert_grep "^commit=6666666666666666666666666666666666666666$" /tmp/inst/etc/teslausb-version "and its commit recorded"
+assert_no_file /tmp/sourcedir/.source.tar.gz "the tarball was not left in the tmpfs"
+
+start_case "a tree whose tarball had no commit is not fetched again"
+install_block_env
+rm -rf /tmp/sourcedir
+mkdir -p /tmp/sourcedir
+: > /tmp/sourcedir/.teslausb-commit
+run_install_block /tmp/sourcedir
+assert_grep "^commit=$" /tmp/inst/etc/teslausb-version "commit is empty"
+assert_no_file /tmp/inst/curl.calls "nothing was fetched"
+rm -rf /tmp/inst /tmp/sourcedir
 
 # ===========================================================================
 if [ -n "${COVERAGE:-}" ]

@@ -1278,10 +1278,22 @@ chmod 755 /etc/network/if-up.d/teslausb-timesync
 # says nothing once the branch moves, so the commit comes from the source tarball's
 # own header; a source supplied some other way has none, and the check then stays
 # quiet rather than guess.
+#
+# An upgrade is started by the script already installed, which fetches the source
+# and hands its directory to this one. A script from before the commit was kept
+# beside the source hands over a tree without it, so the header is read again from
+# the tarball it came from, which the directory's name identifies.
+installed_commit=$(cat "$SOURCE_DIR/.teslausb-commit" 2> /dev/null || true)
+if [ -z "$installed_commit" ] && [ ! -e "$SOURCE_DIR/.teslausb-commit" ] && [ "$SOURCE_DIR" = /tmp/sourcedir ]
+then
+  curlwrapper -L "https://github.com/${REPO}/teslausb/archive/${BRANCH}.tar.gz" -o "$SOURCE_DIR/.source.tar.gz"
+  installed_commit=$(gzip -dc "$SOURCE_DIR/.source.tar.gz" | head -c 1024 | grep -ao 'comment=[0-9a-f]\{40\}' | cut -d= -f2 || true)
+  rm -f "$SOURCE_DIR/.source.tar.gz"
+fi
 {
   echo "repo=${REPO}"
   echo "ref=${BRANCH}"
-  echo "commit=$(cat "$SOURCE_DIR/.teslausb-commit" 2> /dev/null || true)"
+  echo "commit=${installed_commit}"
 } > /etc/teslausb-version
 chmod 644 /etc/teslausb-version
 
