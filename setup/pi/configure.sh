@@ -474,39 +474,6 @@ EOF
   systemctl daemon-reexec
 }
 
-# Offer the SD card a faster clock, verified before it is kept. The decision and
-# the trial live in teslausb-sd-overclock (see run/teslausb-sd-overclock.sh); this
-# installs it, orders its boot step ahead of the drive being offered to the car,
-# and tells it what the configuration asks for.
-function install_sd_overclock () {
-  local tool=/usr/local/bin/teslausb-sd-overclock
-
-  log_progress "Installing the SD clock trial"
-  copy_script run/teslausb-sd-overclock.sh /usr/local/bin
-  mv -f "$tool.sh" "$tool"
-  chmod 755 "$tool"
-
-  cat << EOF > /lib/systemd/system/teslausb-sd-overclock.service
-[Unit]
-Description=Try, verify and keep a faster SD card clock
-DefaultDependencies=no
-RequiresMountsFor=/mutable /boot/firmware
-After=mutable.mount boot-firmware.mount sys-kernel-debug.mount
-Before=teslausb.service
-ConditionPathExists=/mutable/sd-overclock/state
-
-[Service]
-Type=oneshot
-ExecStart=$tool boot
-
-[Install]
-WantedBy=sysinit.target
-EOF
-
-  systemctl enable teslausb-sd-overclock.service
-  "$tool" configure "${SD_OVERCLOCK:-auto}"
-}
-
 function install_archive_scripts () {
   local install_path="$1"
   local archive_module="$2"
@@ -988,5 +955,4 @@ systemctl enable teslausb.service
 
 install_usb_link_watchdog /root/bin
 install_hardware_watchdog
-install_sd_overclock
 install_sentry_keeper /root/bin

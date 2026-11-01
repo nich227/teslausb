@@ -104,9 +104,6 @@ check "Bluetooth firmware is installed" "dpkg-query -W bluez-firmware"
 check "and the adapter is up" "hciconfig hci0 | grep -q 'UP RUNNING'"
 check_grep "an attached display is kept awake" "^hdmi_blanking=0" "/boot/firmware/config.txt"
 check "console autologin is in place, under the name DietPi will not delete" "test -f /etc/systemd/system/getty@tty1.service.d/teslausb-autologin.conf"
-check "the SD clock trial is installed and has decided" "test -x /usr/local/bin/teslausb-sd-overclock && test -f /mutable/sd-overclock/state"
-check "and left no tryboot.txt behind" "test ! -e /boot/firmware/tryboot.txt"
-echo "  SD clock: $(remote 'teslausb-sd-overclock status | paste -sd, ' | tr -d '\r')"
 
 section "packages DietPi does not ship, installed by setup"
 for pkg in xfsprogs dosfstools exfatprogs dos2unix autofs nginx fcgiwrap avahi-daemon libnss-mdns rsync openssh-client zip jq
