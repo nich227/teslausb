@@ -2458,8 +2458,9 @@ assert_grep "^/tmp/jm/mutable/journal /tmp/jm/varlog/journal none bind,nofail,x-
 conf=/tmp/jm/etc/systemd/journald.conf.d/teslausb.conf
 assert_file "$conf" "a journald drop-in is written"
 assert_grep "^Storage=persistent$" "$conf" "journald is told to persist, not merely to use a directory if present"
-assert_grep "^SystemMaxUse=32M$" "$conf" "capped far below the partition's size"
-assert_grep "^SystemMaxFileSize=8M$" "$conf" "in files small enough to rotate often"
+assert_grep "^SystemMaxUse=128M$" "$conf" "capped well below the partition's size"
+assert_grep "^SystemMaxFileSize=16M$" "$conf" "in files small enough to rotate often"
+assert_grep "^SystemMaxFiles=12$" "$conf" "keeping enough of them to reach the boot before an outage"
 assert_grep "^SyncIntervalSec=60s$" "$conf" "with infrequent syncs, since power drops many times a day"
 assert_grep "^Compress=yes$" "$conf" "and compressed"
 assert_grep "survives a reboot" /tmp/journal.progress "and says what it is doing"
@@ -2480,6 +2481,7 @@ start_case "the readonly script calls it alongside the other log fixes"
 assert_grep "^persist_journal_to_mutable$" "$REPO/setup/pi/make-root-fs-readonly.sh" "called at the top level"
 cp /tmp/fstab.real /etc/fstab 2>/dev/null || true
 rm -rf /tmp/jm /tmp/journal.progress
+
 
 start_case "the swap entry goes with the swap file"
 # Deleting /var/swap while DietPi's fstab still points at it fails local-fs.target.

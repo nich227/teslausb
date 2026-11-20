@@ -119,6 +119,7 @@ function remove_dietpi_ramlog () {
   mkdir -p /var/log
 }
 
+
 # The journal is what tells you why a device rebooted, and on a read-only root it is kept
 # in RAM and gone the moment power drops, which is exactly when it was needed. A device that
 # went dark for seven hours left nothing behind but archiveloop's own log, and only because
@@ -131,6 +132,14 @@ function remove_dietpi_ramlog () {
 # crowd out the archive state that lives beside it. Storage=persistent rather than auto,
 # because auto only persists when the directory already exists at boot, and the bind mount
 # is what creates it.
+#
+# The device is chatty (the usb-link watchdog, the AP channel check and archiveloop together
+# fill a journal file in about an hour), and the car reboots the Pi many times a day, so the
+# window that actually matters -- the boot BEFORE an outage -- is easily rotated away. The
+# original 32M/8M kept only about four boots, roughly an hour of real history. The cap is
+# raised to 128M with 16M files and an explicit 12-file limit, which keeps on the order of a
+# day of boots while still leaving well over half of the ~285M /mutable partition free for
+# archiveloop state.
 function persist_journal_to_mutable () {
   log_progress "Keeping the systemd journal on /mutable so it survives a reboot"
   mkdir -p /mutable/journal /var/log/journal
@@ -142,8 +151,9 @@ function persist_journal_to_mutable () {
   cat << 'EOF' > /etc/systemd/journald.conf.d/teslausb.conf
 [Journal]
 Storage=persistent
-SystemMaxUse=32M
-SystemMaxFileSize=8M
+SystemMaxUse=128M
+SystemMaxFileSize=16M
+SystemMaxFiles=12
 SyncIntervalSec=60s
 Compress=yes
 EOF
