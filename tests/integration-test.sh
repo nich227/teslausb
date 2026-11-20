@@ -2482,6 +2482,46 @@ assert_grep "^persist_journal_to_mutable$" "$REPO/setup/pi/make-root-fs-readonly
 cp /tmp/fstab.real /etc/fstab 2>/dev/null || true
 rm -rf /tmp/jm /tmp/journal.progress
 
+# DietPi's hourly cron runs dietpi-logclear, which deletes every file under /var/log,
+# whenever .installed still records a RAMlog logging index (-1 or -2). With the journal
+# bound under /var/log that wipes every archived journal file each hour.
+logclear_fn=$(sed -n '/^function stop_dietpi_hourly_logclear/,/^}/p' "$REPO/setup/pi/make-root-fs-readonly.sh")
+run_logclear_fix () {
+  ( # shellcheck disable=SC2329
+    log_progress () { echo "$*" >> /tmp/logclear.progress; }
+    eval "${logclear_fn//\/boot\/dietpi\/.installed//tmp/lc.installed}"
+    stop_dietpi_hourly_logclear
+  )
+}
+
+for idx in -1 -2; do
+  start_case "a stale RAMlog logging index of $idx is reset so the hourly cron stops clearing /var/log"
+  printf 'G_HW_MODEL=3\nINDEX_LOGGING=%s\nAUTO=1\n' "$idx" > /tmp/lc.installed
+  : > /tmp/logclear.progress
+  run_logclear_fix && LC_RC=0 || LC_RC=$?
+  assert_eq "$LC_RC" 0 "exits 0"
+  assert_grep "^INDEX_LOGGING=0$" /tmp/lc.installed "the index becomes 0, DietPi's no-clearing mode"
+  assert_grep "^G_HW_MODEL=3$" /tmp/lc.installed "the other settings are untouched"
+  assert_grep "^AUTO=1$" /tmp/lc.installed "on both sides of it"
+  assert_grep "journal survives" /tmp/logclear.progress "and says what it is doing"
+done
+
+start_case "an index that already disables clearing is left alone"
+printf 'INDEX_LOGGING=0\n' > /tmp/lc.installed
+: > /tmp/logclear.progress
+run_logclear_fix
+assert_grep "^INDEX_LOGGING=0$" /tmp/lc.installed "still 0"
+assert_eq "$(wc -c < /tmp/logclear.progress)" 0 "and nothing is reported"
+
+start_case "a device without DietPi's .installed is not an error"
+rm -f /tmp/lc.installed
+run_logclear_fix && LC_RC=0 || LC_RC=$?
+assert_eq "$LC_RC" 0 "exits 0"
+assert_eq "$([ -e /tmp/lc.installed ] && echo yes || echo no)" no "and creates nothing"
+
+start_case "the readonly script calls it before persisting the journal"
+assert_grep "^stop_dietpi_hourly_logclear$" "$REPO/setup/pi/make-root-fs-readonly.sh" "called at the top level"
+rm -f /tmp/lc.installed /tmp/logclear.progress
 
 start_case "the swap entry goes with the swap file"
 # Deleting /var/swap while DietPi's fstab still points at it fails local-fs.target.

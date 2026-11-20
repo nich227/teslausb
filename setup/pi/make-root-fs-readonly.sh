@@ -119,6 +119,22 @@ function remove_dietpi_ramlog () {
   mkdir -p /var/log
 }
 
+# DietPi's /etc/cron.hourly/dietpi runs dietpi-logclear every hour whenever
+# /boot/dietpi/.installed says INDEX_LOGGING is -1 or -2 (the DietPi-RAMlog modes).
+# Uninstalling RAMlog does not always reset that index, and dietpi-logclear deletes
+# every file under /var/log -- which, once the journal is bound there from /mutable,
+# means every archived journal file, every hour. The persistent journal then never
+# holds more than the current hour. Index 0 is DietPi's "no log clearing" mode.
+# Done unconditionally, because a device that lost RAMlog on an earlier run still has
+# the stale index.
+function stop_dietpi_hourly_logclear () {
+  local installed=/boot/dietpi/.installed
+  if [ -f "$installed" ] && grep -qE '^[[:blank:]]*INDEX_LOGGING=-[12]' "$installed"
+  then
+    log_progress "Stopping DietPi's hourly /var/log clearing so the journal survives"
+    sed -i -E 's/^([[:blank:]]*INDEX_LOGGING=)-[12]/\10/' "$installed"
+  fi
+}
 
 # The journal is what tells you why a device rebooted, and on a read-only root it is kept
 # in RAM and gone the moment power drops, which is exactly when it was needed. A device that
@@ -162,6 +178,7 @@ EOF
 remove_dietpi_ramlog
 restore_nginx_log_mountpoint
 disable_dietpi_ramlog_units
+stop_dietpi_hourly_logclear
 persist_journal_to_mutable
 
 # adb service exists on some distributions and interferes with mass storage emulation
