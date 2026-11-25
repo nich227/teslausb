@@ -412,6 +412,16 @@ export CAM_SIZE=40G
 #          Sentry Mode is not used by TeslaUSB. Instead a periodic command is
 #          sent to the car to keep it awake.
 #
+#  Case 4: [Compatible with Tessie only]
+#
+#          Sentry Mode is not used by TeslaUSB. Upon arriving home, TeslaUSB
+#          turns ON Pet Mode (the climate keeper) to hold the car awake, and
+#          turns it OFF when archiving completes. Unlike Case 2, nothing that
+#          walks past the car while it archives becomes a Sentry event.
+#          Pet Mode runs the climate system for the length of the archive and
+#          the car refuses it below 20% battery, so make sure the car has
+#          enough charge for your archiving window.
+#
 # Provide your use case here:
 #export SENTRY_CASE=1
 #

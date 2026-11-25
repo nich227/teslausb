@@ -229,7 +229,7 @@ function check_tessie_api () {
   if [[ ( -n "${TESSIE_API_TOKEN:+x}" ) ]]
   then
     check_variable "SENTRY_CASE"
-    if [[ "$SENTRY_CASE" != 1 && "$SENTRY_CASE" != 2 && "$SENTRY_CASE" != 3 ]]; then
+    if [[ "$SENTRY_CASE" != 1 && "$SENTRY_CASE" != 2 && "$SENTRY_CASE" != 3 && "$SENTRY_CASE" != 4 ]]; then
       log_progress "STOP: invalid SENTRY_CASE for Tessie API."
       exit 1
     fi

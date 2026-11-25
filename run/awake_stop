@@ -132,6 +132,31 @@ case "${SENTRY_CASE}" in
       rm -f /tmp/keep_awake_task_pid
     fi
   ;;
+  4)
+    # Turn the climate keeper off (mode 0) so the car can go back to sleep.
+    if [[ -n "${TESSIE_API_TOKEN:+x}" ]]
+    then
+      http_response=$(curl -s -w "%{http_code}" \
+        -H "Authorization: Bearer $TESSIE_API_TOKEN" \
+        -H "Accept: application/json" \
+        -H "User-Agent: github.com/marcone/teslausb" \
+        "https://api.tessie.com/$TESSIE_VIN/command/set_climate_keeper_mode?mode=0")
+
+      log "Tessie: Command sent to disable Pet Mode."
+      http_status="${http_response: -3}"
+      response_body="${http_response:0:${#http_response}-3}"
+
+      if [ "$http_status" != "200" ]
+      then
+        log "Tessie: Failed to disable Pet Mode. Check your TESSIE_API_TOKEN and TESSIE_VIN are set correctly. If they are, your car may not have a good connection."
+      elif [[ "$(jq -r '.result' <<<"$response_body" 2>/dev/null)" != "true" ]]
+      then
+        log "Tessie: Failed to disable Pet Mode. Response data: $response_body"
+      fi
+    else
+      log "SENTRY_CASE 4 (Pet Mode) requires Tessie."
+    fi
+  ;;
   *)
     log "Invalid or no SENTRY_CASE defined."
   ;;

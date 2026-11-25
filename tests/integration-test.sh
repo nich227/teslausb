@@ -1838,6 +1838,73 @@ then ok "jq is bootstrapped, which both the watchdog and the keeper need"
 else not_ok "jq is used to parse Tessie's JSON but never installed"
 fi
 
+banner "Pet Mode keep-awake (SENTRY_CASE=4)"
+# ===========================================================================
+# Holds the car awake with the climate keeper instead of Sentry, so an hour of
+# archiving in the driveway does not become an hour of Sentry events.
+
+cp "$STUBS/curl" /tmp/curl.away
+cat > "$STUBS/curl" <<'EOF'
+#!/bin/bash
+echo "curl $*" >> /tmp/awake.calls
+printf '{"result":true}200'
+EOF
+chmod +x "$STUBS/curl"
+# archiveloop exports its log function to the awake scripts; stand in for it
+run_awake () {
+  rm -f /tmp/awake.calls /tmp/awake.log /tmp/sentry_keeper_pid
+  # shellcheck disable=SC2016  # the inner shell expands $1, not this one
+  env SENTRY_CASE="$2" TESSIE_API_TOKEN=token TESSIE_VIN=VIN \
+    bash -c 'log () { echo "$*" >> /tmp/awake.log; }; export -f log; bash "$1"' _ "$REPO/run/$1"
+}
+
+start_case "awake_start turns Pet Mode on instead of Sentry"
+run_awake awake_start 4
+assert_grep "set_climate_keeper_mode?mode=2" /tmp/awake.calls "asks Tessie for the dog climate keeper"
+assert_no_grep "enable_sentry" /tmp/awake.calls "and does not touch Sentry"
+assert_grep "enable Pet Mode" /tmp/awake.log "logs what it did"
+assert_no_file /tmp/sentry_keeper_pid "the Sentry keeper is not started"
+
+start_case "awake_stop turns Pet Mode off again"
+run_awake awake_stop 4
+assert_grep "set_climate_keeper_mode?mode=0" /tmp/awake.calls "clears the climate keeper"
+assert_no_grep "disable_sentry" /tmp/awake.calls "and does not touch Sentry"
+assert_grep "disable Pet Mode" /tmp/awake.log "logs what it did"
+
+start_case "a refused command is reported, not hidden"
+cat > "$STUBS/curl" <<'EOF'
+#!/bin/bash
+printf '{"result":false,"reason":"battery too low"}200'
+EOF
+run_awake awake_start 4
+assert_grep "Failed to set Pet Mode.*battery too low" /tmp/awake.log "the reason from the car is logged"
+
+start_case "Pet Mode is a Tessie-only case"
+rm -f /tmp/awake.log
+# shellcheck disable=SC2016  # the inner shell expands $1, not this one
+env SENTRY_CASE=4 TESLA_BLE_VIN=VIN \
+  bash -c 'log () { echo "$*" >> /tmp/awake.log; }; export -f log; bash "$1"' _ "$REPO/run/awake_start"
+assert_grep "requires Tessie" /tmp/awake.log "awake_start says so instead of silently doing nothing"
+tessie_check=$(sed -n '/^function check_tessie_api/,/^}/p' "$REPO/setup/pi/configure.sh")
+teslafi_check=$(sed -n '/^function check_teslafi_api/,/^}/p' "$REPO/setup/pi/configure.sh")
+config_check () {
+  bash -c "log_progress () { echo \"\$*\"; }; check_variable () { :; }; command () { return 0; }
+    $1
+    $2" 2>&1
+}
+if out=$(TESSIE_API_TOKEN=t TESSIE_VIN=v SENTRY_CASE=4 config_check "$tessie_check" check_tessie_api)
+then ok "configure.sh accepts SENTRY_CASE=4 with Tessie"
+else not_ok "configure.sh rejects SENTRY_CASE=4 with Tessie: $out"
+fi
+if out=$(TESLAFI_API_TOKEN=t SENTRY_CASE=4 config_check "$teslafi_check" check_teslafi_api)
+then not_ok "configure.sh accepts SENTRY_CASE=4 with TeslaFi, which cannot do Pet Mode"
+else ok "configure.sh rejects SENTRY_CASE=4 with TeslaFi"
+fi
+assert_grep "Case 4:" "$REPO/dietpi/teslausb_setup_variables.conf.sample" "the sample config documents the case"
+
+mv /tmp/curl.away "$STUBS/curl"
+rm -f /tmp/awake.calls /tmp/awake.log
+
 # ===========================================================================
 banner "installer: install_usb_link_watchdog"
 # ===========================================================================
